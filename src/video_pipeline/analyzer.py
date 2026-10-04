@@ -9,6 +9,27 @@ class VideoAnalyzer:
         if not self.video_path.exists():
             raise FileNotFoundError(f"No se encontró el archivo: {self.video_path}")
 
+    def extract_keyframe(self, output_path: str, target_second: float = 1.0) -> str:
+        """Extrae un fotograma en un segundo específico y lo guarda en disco."""
+        cap = cv2.VideoCapture(str(self.video_path))
+        if not cap.isOpened():
+            raise ValueError(f"No se pudo abrir el stream de vídeo: {self.video_path}")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        target_frame = int(target_second * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            raise RuntimeError(f"No se pudo extraer el fotograma en el segundo {target_second}")
+
+        out_file = Path(output_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out_file), frame)
+        return str(out_file)
+
     def inspect_stream(self) -> dict:
         cap = cv2.VideoCapture(str(self.video_path))
         if not cap.isOpened():
@@ -37,12 +58,9 @@ class VideoAnalyzer:
         cap.release()
 
         avg_blur = round(float(np.mean(blur_scores)), 2) if blur_scores else 0.0
-
-        # Cálculo de bitrate aproximado en kbps
         file_size_bytes = self.video_path.stat().st_size
         bitrate_kbps = round((file_size_bytes * 8) / (duration * 1000), 2) if duration > 0 else 0.0
 
-        # Diagnóstico heurístico de calidad
         issues = []
         if height < 720:
             issues.append(f"Resolución baja ({width}x{height} < 720p)")
@@ -52,6 +70,12 @@ class VideoAnalyzer:
             issues.append(f"Bitrate excesivamente bajo ({bitrate_kbps} kbps)")
 
         status = "OPTIMAL" if not issues else "DEGRADED"
+
+        # Si la calidad es degradada, extraemos automáticamente un frame de muestra
+        extracted_frame = None
+        if status == "DEGRADED":
+            frame_dest = f"data/frames/{self.video_path.stem}_evidence.jpg"
+            extracted_frame = self.extract_keyframe(frame_dest, target_second=1.0)
 
         return {
             "file": self.video_path.name,
@@ -63,6 +87,7 @@ class VideoAnalyzer:
             "sharpness_score": avg_blur,
             "status": status,
             "issues": issues,
+            "evidence_frame": extracted_frame,
         }
 
 
