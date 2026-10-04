@@ -1,0 +1,34 @@
+[
+  {
+    "id": "KB-RING-001",
+    "issue_category": "low_bitrate_and_pixelation",
+    "symptoms": ["Bitrate inferior a 150 kbps", "Artefactos de compresión en bloque", "Resolución inferior a 720p"],
+    "root_cause": "Ancho de banda insuficiente en el canal de subida (upstream) o señal RSSI débil entre el videotimbre y el router.",
+    "diagnostic_steps": [
+      "Verificar el valor RSSI en la app de Ring: si está entre -65 dBm y -90 dBm, la conexión es deficiente.",
+      "Comprobar si el canal Wi-Fi de 2.4 GHz sufre interferencias de otras redes vecinas.",
+      "Realizar un test de velocidad comprobando que la subida supere los 2 Mbps dedicados por cámara."
+    ],
+    "recommended_actions": [
+      "Mover el router más cerca del dispositivo o instalar un Ring Chime Pro / repetidor de señal.",
+      "Cambiar el canal de 2.4 GHz en el router del canal automático a canales no superpuestos (1, 6 u 11).",
+      "Priorizar el tráfico del dispositivo activando Calidad de Servicio (QoS) en el router."
+    ]
+  },
+  {
+    "id": "KB-RING-002",
+    "issue_category": "low_frame_rate_stutter",
+    "symptoms": ["FPS inferior a 20", "Saltos temporales en la imagen", "Pérdida de paquetes en el stream"],
+    "root_cause": "Congestión de la red local, fluctuación excesiva de latencia (jitter) o estrangulamiento térmico del dispositivo.",
+    "diagnostic_steps": [
+      "Comprobar el número de dispositivos concurrentes conectados a la banda Wi-Fi del timbre.",
+      "Verificar pérdida de paquetes (packet loss) enviando pings continuos a la IP del dispositivo.",
+      "Comprobar la temperatura operativa del videotimbre si está expuesto a luz solar directa."
+    ],
+    "recommended_actions": [
+      "Separar bandas del router (SSID dedicado para dispositivos IoT en 2.4 GHz).",
+      "Reiniciar el videotimbre Ring manteniendo presionado el botón de configuración durante 20 segundos.",
+      "Actualizar el firmware del dispositivo desde la aplicación para aplicar mejoras en el control de congestión de vídeo."
+    ]
+  }
+]
