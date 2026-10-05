@@ -1,5 +1,54 @@
-venv/ 
-__pycache__/ 
-*.pyc 
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C environments
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets (CRÍTICO: nunca subir credenciales AWS)
 .env
-data/frames/ 
+.env.*
+!.env.example
+
+# IDEs & Editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Temporary analysis frames / generated evidence
+data/temp/
+*.jpg
+*.jpeg
+*.png
+!assets/*.png
+!assets/*.jpg
+
+# Large video sample files (opcional: ignora vídeos pesados salvo las muestras base)
+data/samples/*.mp4
+!data/samples/test_stream_good.mp4
+!data/samples/test_stream_bad.mp4
