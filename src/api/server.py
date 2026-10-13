@@ -103,7 +103,7 @@ class TelemetryRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     video_path: Optional[str] = None          # File name under samples/ or uploads/
     frame_base64: Optional[str] = None        # Current frame in Base64 (direct from WebRTC Canvas)
-    telemetry: Dict[str, Any]                 # Complete telemetry payload
+    telemetry: Optional[Dict[str, Any]] = None  # Complete telemetry payload
     provider: str = "bedrock"                 # "bedrock" | "groq"
     keyframe_second: float = 1.0
     camera_active: bool = False               # Whether camera is active or in low-power standby
