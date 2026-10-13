@@ -76,9 +76,9 @@ RESPOND ONLY with a valid, parseable JSON object in English, without markdown wr
   "diagnostic_status": "HEALTHY|DEGRADED|CRITICAL",
   "root_cause_domain": "NETWORK|OPTICAL_PHYSICAL|HARDWARE_POWER|ENVIRONMENT_POWER|AUDIO_NETWORK|ALGORITHM_CONFIGURATION|NONE",
   "confidence_score": 0.0,
-  "telemetry_findings": ["list of telemetry anomalies or confirmations in English"],
-  "visual_findings": ["detailed visual observations on the frame in English"],
-  "recommended_mitigation": "concrete, official, and actionable step in English based on Ring SOPs"
+  "telemetry_findings": ["Max 2 concise, factual bullet points in English"],
+  "visual_findings": ["Max 2 concise visual observations on the frame in English"],
+  "recommended_mitigation": "Single direct and actionable resolution sentence based on Ring SOPs"
 }"""
 
 
@@ -175,7 +175,7 @@ class SupportConcierge:
                 {"role": "user",   "content": user_content},
             ],
             temperature=0.1,
-            max_tokens=1024,
+            max_tokens=512,
             response_format={"type": "json_object"},
         )
         return response.choices[0].message.content
@@ -199,7 +199,7 @@ class SupportConcierge:
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "system": SYSTEM_PROMPT,
-            "max_tokens": 1024,
+            "max_tokens": 512,
             "temperature": 0.1,
             "messages": [{"role": "user", "content": content}],
         })
@@ -300,8 +300,8 @@ class SupportConcierge:
             video_metrics, image_base64 = VideoAnalyzer.analyze_frame_base64(
                 frame_base64=frame_base64,
                 telemetry=telemetry,
-                max_width=1280,
-                jpeg_quality=80,
+                max_width=720,
+                jpeg_quality=75,
             )
             print(f"      Stream status: {video_metrics['status']} | "
                   f"Sharpness: {video_metrics['sharpness_score']} | "
@@ -317,11 +317,11 @@ class SupportConcierge:
                   f"Bitrate: {video_metrics['bitrate_kbps']} kbps | "
                   f"Sharpness: {video_metrics['sharpness_score']}")
 
-            print(f"[2/4] Extracting keyframe at t={keyframe_second}s (Base64 JPEG, max 1280px)...")
+            print(f"[2/4] Extracting keyframe at t={keyframe_second}s (Base64 JPEG, max 720px)...")
             image_base64 = analyzer.get_frame_base64(
                 target_second=keyframe_second,
-                max_width=1280,
-                jpeg_quality=80,
+                max_width=720,
+                jpeg_quality=75,
             )
 
         size_kb = len(image_base64) * 3 // 4 // 1024 if image_base64 else 0

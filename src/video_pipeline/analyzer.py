@@ -43,8 +43,8 @@ class VideoAnalyzer:
     def get_frame_base64(
         self,
         target_second: float = 1.0,
-        max_width: int = 1280,
-        jpeg_quality: int = 80
+        max_width: int = 720,
+        jpeg_quality: int = 75
     ) -> str:
         """
         Extracts a keyframe at target second and returns an optimized Base64 JPEG string.
@@ -112,8 +112,8 @@ class VideoAnalyzer:
         cls,
         frame_base64: str,
         telemetry: dict = None,
-        max_width: int = 1280,
-        jpeg_quality: int = 80
+        max_width: int = 720,
+        jpeg_quality: int = 75
     ) -> tuple[dict, str]:
         """
         Analyzes a Base64 frame in-memory (extracted directly from live WebRTC Canvas).
