@@ -1,0 +1,492 @@
+/* =====================================================================
+   RING HARDWARE DIGITAL TWIN (Interactive 3D Physical Chassis)
+   ===================================================================== */
+.device-visual {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.25rem 1rem 1.25rem;
+  background: radial-gradient(circle at 50% 0%, #151d2f 0%, #0b0f19 100%);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(26,108,255,0.3);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.device-visual::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, #00d4ff 50%, transparent);
+}
+
+.twin-top-bar {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.twin-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #00e676;
+  background: rgba(0,230,118,0.1);
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,230,118,0.25);
+}
+.twin-status-tag .pulse-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #00e676;
+  box-shadow: 0 0 6px #00e676;
+  animation: blink-live 1.6s infinite ease-in-out;
+}
+@keyframes blink-live {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.25; transform: scale(0.7); }
+}
+
+.plate-selector {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.plate-color-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.15s, border-color 0.15s;
+}
+.plate-color-dot:hover { transform: scale(1.2); }
+.plate-color-dot.active { border-color: #00d4ff; transform: scale(1.15); }
+.plate-nickel { background: linear-gradient(135deg, #e4e7eb, #9aa0a6); }
+.plate-bronze { background: linear-gradient(135deg, #8d6e63, #3e2723); }
+.plate-black  { background: linear-gradient(135deg, #424242, #181818); }
+.plate-white  { background: linear-gradient(135deg, #ffffff, #cfd8dc); }
+
+/* Ring Physical Chassis Container */
+.ring-chassis {
+  position: relative;
+  width: 140px;
+  height: 275px;
+  background: #0a0b10;
+  border-radius: 22px;
+  border: 2px solid #252936;
+  box-shadow: 
+    0 16px 36px rgba(0,0,0,0.75),
+    0 2px 6px rgba(0,0,0,0.5),
+    inset 0 1px 1px rgba(255,255,255,0.2),
+    inset 0 -1px 2px rgba(0,0,0,0.9);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  margin: 0.25rem 0 0.85rem;
+}
+
+/* Upper Optical Module (High-Gloss Piano Black) */
+.ring-top-module {
+  position: relative;
+  width: 100%;
+  height: 142px;
+  background: linear-gradient(180deg, #181a24 0%, #0d0e14 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 10px;
+  border-bottom: 2px solid #000;
+}
+.ring-top-module::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 15%; right: 15%; height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
+}
+
+.ring-mic-hole {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #020305;
+  box-shadow: inset 0 1px 1px #000, 0 1px 0 rgba(255,255,255,0.08);
+  margin-bottom: 8px;
+}
+
+/* Camera Optical Assembly */
+.ring-camera-assembly {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #080b12 0%, #151822 80%, #202432 100%);
+  border: 2px solid #2b3142;
+  box-shadow: 
+    0 3px 8px rgba(0,0,0,0.8),
+    inset 0 2px 4px rgba(0,0,0,0.9),
+    inset 0 -1px 2px rgba(255,255,255,0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ring-lens-glass {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #183858 0%, #071526 55%, #010408 100%);
+  box-shadow: inset 0 0 10px rgba(0,180,255,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 0.3s ease;
+}
+
+.ring-lens-pupil {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #001020 0%, #000000 80%);
+  box-shadow: 0 0 6px rgba(0,0,0,0.9);
+}
+
+.ring-lens-dirty-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 45% 45%, rgba(200,180,140,0.7) 0%, rgba(120,100,70,0.4) 70%, transparent 100%);
+  filter: blur(1.5px);
+  display: none;
+  pointer-events: none;
+}
+.ring-lens-dirty-overlay.active { display: block; }
+
+.ring-lens-pink-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 20, 147, 0.55);
+  mix-blend-mode: screen;
+  display: none;
+  pointer-events: none;
+}
+.ring-lens-pink-overlay.active { display: block; }
+
+/* 4 Micro LEDs Infrarrojos */
+.ir-led {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #11141c;
+  border: 1px solid #232733;
+  transition: all 0.3s ease;
+}
+.ir-led.top    { top: 5px; left: 50%; transform: translateX(-50%); }
+.ir-led.bottom { bottom: 5px; left: 50%; transform: translateX(-50%); }
+.ir-led.left   { left: 5px; top: 50%; transform: translateY(-50%); }
+.ir-led.right  { right: 5px; top: 50%; transform: translateY(-50%); }
+.ir-led.active {
+  background: #ff1e38;
+  box-shadow: 0 0 6px #ff1e38, 0 0 10px rgba(255,30,56,0.6);
+  border-color: #ff556b;
+}
+
+/* PIR Motion Sensor Dome */
+.ring-pir-dome {
+  width: 28px;
+  height: 11px;
+  border-radius: 14px / 5.5px;
+  background: linear-gradient(180deg, #1c202a 0%, #12151c 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  margin-top: 8px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.6);
+}
+
+/* Micro Speaker Grille */
+.ring-speaker-grill {
+  display: flex;
+  gap: 3px;
+  margin-top: 8px;
+}
+.ring-speaker-grill span {
+  width: 2.5px;
+  height: 2.5px;
+  border-radius: 50%;
+  background: #06070a;
+  box-shadow: inset 0 1px 1px #000;
+}
+
+/* Lower Module: Interchangeable Faceplate */
+.ring-faceplate {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  background: linear-gradient(145deg, #d3d7de 0%, #aeb4be 45%, #9299a4 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0 12px;
+  box-shadow: inset 0 2px 2px rgba(255,255,255,0.4), inset 0 -2px 4px rgba(0,0,0,0.4);
+  transition: background 0.4s ease;
+}
+.ring-faceplate.plate-bronze { background: linear-gradient(145deg, #5d4037 0%, #4e342e 45%, #271814 100%); }
+.ring-faceplate.plate-black  { background: linear-gradient(145deg, #2c2f36 0%, #1f2126 45%, #121316 100%); }
+.ring-faceplate.plate-white  { background: linear-gradient(145deg, #f5f6f8 0%, #e2e4e8 45%, #cbcfd6 100%); }
+
+/* Mechanical Ring Push Button & LED Halo Ring */
+.ring-button-socket {
+  position: relative;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: #141720;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.35), inset 0 2px 4px rgba(0,0,0,0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ring-led-halo {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 3.5px solid transparent;
+  box-sizing: border-box;
+  pointer-events: none;
+  transition: all 0.3s ease;
+}
+
+/* LED Ring Halo States */
+.ring-led-halo.led-idle {
+  border-color: rgba(0, 180, 255, 0.45);
+  box-shadow: 0 0 12px rgba(0, 180, 255, 0.45), inset 0 0 6px rgba(0, 180, 255, 0.2);
+  animation: ring-breathe 4s infinite ease-in-out;
+}
+@keyframes ring-breathe {
+  0%, 100% { opacity: 0.5; filter: drop-shadow(0 0 4px rgba(0,180,255,0.3)); }
+  50% { opacity: 0.95; filter: drop-shadow(0 0 10px rgba(0,212,255,0.7)); }
+}
+
+.ring-led-halo.led-ringing {
+  border: none;
+  background: conic-gradient(from 0deg, transparent 15%, #00d4ff 70%, #ffffff 100%);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 0);
+  animation: ring-spin 0.85s infinite linear;
+  box-shadow: 0 0 16px rgba(0,212,255,0.9);
+}
+@keyframes ring-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ring-led-halo.led-warning {
+  border-color: #ffd600;
+  box-shadow: 0 0 12px #ffd600;
+  animation: ring-pulse-warn 1s infinite alternate;
+}
+.ring-led-halo.led-error {
+  border-color: #ff3d57;
+  box-shadow: 0 0 14px #ff3d57;
+  animation: ring-pulse-warn 0.5s infinite alternate;
+}
+@keyframes ring-pulse-warn {
+  from { opacity: 0.3; }
+  to { opacity: 1; }
+}
+
+.ring-led-halo.led-offline {
+  border-color: rgba(255,255,255,0.06);
+  box-shadow: none;
+  animation: none;
+}
+
+/* Physical Mechanical Button */
+.ring-push-button {
+  position: relative;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #1f232e 0%, #0e1017 100%);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 4px 6px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.25);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+  outline: none;
+}
+.ring-push-button:hover {
+  background: linear-gradient(145deg, #272d3a 0%, #131620 100%);
+  transform: scale(1.02);
+}
+.ring-push-button:active, .ring-push-button.pressed {
+  transform: scale(0.93);
+  background: #090b10;
+  box-shadow: inset 0 3px 6px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.4);
+}
+
+.ring-button-icon {
+  font-size: 1.15rem;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8));
+  transition: transform 0.2s;
+}
+.ring-push-button:hover .ring-button-icon { transform: scale(1.1); }
+
+/* Embossed Ring Logo */
+.ring-engraved-logo {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: rgba(0,0,0,0.35);
+  text-transform: lowercase;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.3);
+  user-select: none;
+}
+.ring-faceplate.plate-bronze .ring-engraved-logo,
+.ring-faceplate.plate-black .ring-engraved-logo {
+  color: rgba(255,255,255,0.2);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.8);
+}
+
+.device-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.device-id {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 2px;
+  text-align: center;
+}
+
+.device-status-badges {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 0.65rem;
+  flex-wrap: wrap;
+}
+
+/* Hardware Fault Injection Bar */
+.hardware-controls-bar {
+  margin-top: 0.9rem;
+  width: 100%;
+  background: rgba(0,0,0,0.25);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,0.06);
+  padding: 0.7rem;
+}
+.hw-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.hw-btn-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+.hw-tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  background: #141824;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+.hw-tool-btn:hover {
+  background: #1c2333;
+  color: var(--text-primary);
+  border-color: rgba(0,212,255,0.3);
+}
+.hw-tool-btn.active {
+  background: rgba(26,108,255,0.22);
+  border-color: var(--ring-blue);
+  color: #00d4ff;
+  box-shadow: 0 0 8px rgba(0,212,255,0.25);
+}
+.hw-tool-btn.active-warn {
+  background: rgba(255,61,87,0.22);
+  border-color: var(--ring-red);
+  color: #ff556b;
+  box-shadow: 0 0 8px rgba(255,61,87,0.25);
+}
+
+.hw-primary-btn {
+  grid-column: 1 / -1;
+  justify-content: center;
+  padding: 7px;
+  background: linear-gradient(135deg, #1a6cff 0%, #0052cc 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(26,108,255,0.35);
+  transition: all 0.15s ease;
+}
+.hw-primary-btn:hover {
+  background: linear-gradient(135deg, #2b7bff 0%, #0060f0 100%);
+  transform: translateY(-1px);
+}
+.hw-primary-btn:active { transform: translateY(1px); }
+
+/* Ding Notification Banner */
+.chime-banner {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(90deg, rgba(0,212,255,0.15), rgba(26,108,255,0.25));
+  border: 1px solid #00d4ff;
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #00d4ff;
+  animation: fadeInDown 0.3s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+@keyframes fadeInDown {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

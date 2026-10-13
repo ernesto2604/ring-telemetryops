@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ring TelemetryOps — Digital Twin Simulator</title>
+  
+  <!-- Typography Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Modular Stylesheets -->
+  <link rel="stylesheet" href="/web/css/style.css" />
+  <link rel="stylesheet" href="/web/css/ring-device.css" />
+  <link rel="stylesheet" href="/web/css/video-monitor.css" />
+</head>
+<body>
+
+<!-- =====================================================================
+     HEADER & NAVIGATION
+     ===================================================================== -->
+<header>
+  <div class="logo">
+    <div class="logo-ring">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 18a8 8 0 110-16 8 8 0 010 16zm0-12a4 4 0 100 8 4 4 0 000-8z"/>
+      </svg>
+    </div>
+    <span class="logo-text">Ring <span>TelemetryOps</span></span>
+    <span class="logo-badge">Autonomous Concierge</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button class="btn-kb-modal" onclick="openKbModal()">
+      <span>📚</span> Knowledge Base (Official SOPs)
+    </button>
+    <div class="header-status">
+      <div class="dot" id="server-dot"></div>
+      <span id="server-status">Connecting…</span>
+    </div>
+  </div>
+</header>
+
+<!-- =====================================================================
+     MAIN LAYOUT
+     ===================================================================== -->
+<main>
+
+  <!-- ==================================================================
+       COL 1: RING HARDWARE SIMULATOR & PARAMETRIC TELEMETRY
+       ================================================================== -->
+  <aside class="simulator-panel">
+
+    <!-- 3D Physical Digital Twin Device -->
+    <div class="device-visual">
+      <div class="twin-top-bar">
+        <div class="twin-status-tag">
+          <span class="pulse-dot"></span> LIVE HARDWARE
+        </div>
+        <div class="plate-selector" title="Choose faceplate finish">
+          <span class="plate-color-dot plate-nickel active" id="dot-nickel" onclick="changePlateColor('nickel')" title="Satin Nickel"></span>
+          <span class="plate-color-dot plate-bronze" id="dot-bronze" onclick="changePlateColor('bronze')" title="Venetian Bronze"></span>
+          <span class="plate-color-dot plate-black" id="dot-black" onclick="changePlateColor('black')" title="Midnight Black"></span>
+          <span class="plate-color-dot plate-white" id="dot-white" onclick="changePlateColor('white')" title="Pearl White"></span>
+        </div>
+      </div>
+
+      <!-- 3D Ring Doorbell Physical Chassis -->
+      <div class="ring-chassis" id="ring-physical-device">
+        <!-- Upper Optical Module -->
+        <div class="ring-top-module">
+          <div class="ring-mic-hole" title="HD Acoustic Microphone"></div>
+          <div class="ring-camera-assembly">
+            <span class="ir-led top" id="ir-top"></span>
+            <span class="ir-led right" id="ir-right"></span>
+            <span class="ir-led bottom" id="ir-bottom"></span>
+            <span class="ir-led left" id="ir-left"></span>
+            <div class="ring-lens-glass" id="ring-lens-glass">
+              <div class="ring-lens-dirty-overlay" id="lens-dirty-layer"></div>
+              <div class="ring-lens-pink-overlay" id="lens-pink-layer"></div>
+              <div class="ring-lens-pupil"></div>
+            </div>
+          </div>
+          <div class="ring-pir-dome" title="Infrared PIR Motion Sensor"></div>
+          <div class="ring-speaker-grill" title="Two-Way Acoustic Speaker">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+
+        <!-- Lower Module: Interchangeable Faceplate -->
+        <div class="ring-faceplate plate-nickel" id="ring-faceplate">
+          <div class="ring-button-socket">
+            <div class="ring-led-halo led-idle" id="ring-led-halo"></div>
+            <button class="ring-push-button" id="ring-bell-btn" onclick="simulateDing()" title="Press Ring Doorbell Button">
+              <span class="ring-button-icon">🔔</span>
+            </button>
+          </div>
+          <div class="ring-engraved-logo">ring</div>
+        </div>
+      </div>
+
+      <div class="device-name" id="dev-name">Ring Video Doorbell 4</div>
+      <div class="device-id" id="dev-id">ID: a1b2c3d4e5f6</div>
+      <div class="device-status-badges">
+        <span class="badge badge-green" id="badge-wifi">📶 Wi-Fi OK</span>
+        <span class="badge badge-green" id="badge-battery">🔋 100%</span>
+        <span class="badge badge-blue"  id="badge-fw">FW 2.4.18</span>
+      </div>
+
+      <!-- Hardware Fault Injection Bar -->
+      <div class="hardware-controls-bar">
+        <div class="hw-title">
+          <span>🛠️ Hardware Digital Twin</span>
+          <span style="font-size:0.65rem;color:var(--text-muted);text-transform:none">Physical Fault Injection</span>
+        </div>
+        <div class="hw-btn-grid">
+          <button class="hw-tool-btn" id="hw-btn-dirty" onclick="toggleDirtyLens()">
+            <span>💧</span> Dirty Lens
+          </button>
+          <button class="hw-tool-btn" id="hw-btn-night" onclick="toggleNightMode()">
+            <span>🌙</span> Night IR LEDs
+          </button>
+          <button class="hw-tool-btn" id="hw-btn-pink" onclick="togglePinkFilter()">
+            <span>🌸</span> Pink IR Filter
+          </button>
+          <button class="hw-tool-btn" id="hw-btn-flicker" onclick="toggleFlickerLight()">
+            <span>💡</span> 50/60Hz Flicker
+          </button>
+          <button class="hw-tool-btn" id="hw-btn-power" onclick="togglePowerCut()" style="grid-column: 1 / -1;">
+            <span>⚡</span> Transformer Cut (18V→0V)
+          </button>
+        </div>
+      </div>
+
+      <!-- Real-time Ding Notification Banner -->
+      <div class="chime-banner" id="chime-banner">
+        <span>🔔</span> <strong>DING! Doorbell Pressed</strong> — Active WHEP/SIP connection
+      </div>
+    </div>
+
+    <!-- 100% Parametric Telemetry Panel -->
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="card-title-icon">📡</div>
+          Real-Time Telemetry
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button class="btn-header-action btn-reset-telemetry" onclick="resetTelemetryDefaults()" title="Reset all telemetry to optimal factory defaults">
+            <span>🔄</span> Reset Telemetry
+          </button>
+          <span style="font-size:0.68rem;color:var(--ring-cyan);font-weight:600;">Ring Partner API</span>
+        </div>
+      </div>
+
+      <!-- Power Mode Selector -->
+      <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 1.1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
+          <span style="font-size: 0.68rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Power Installation</span>
+          <span id="power-mode-status-pill" style="font-size: 0.65rem; color: var(--ring-cyan); font-weight: 500;">⚡ Continuous Hardwired</span>
+        </div>
+        <div class="provider-row" style="width: 100%;">
+          <button class="provider-btn active" id="btn-pwr-wired" onclick="setPowerMode('wired')" style="flex: 1; text-align: center;">
+            ⚡ Hardwired (Transformer)
+          </button>
+          <button class="provider-btn" id="btn-pwr-battery" onclick="setPowerMode('battery')" style="flex: 1; text-align: center;">
+            🔋 Battery Only
+          </button>
+        </div>
+      </div>
+
+      <!-- Continuous Parametric Sliders -->
+      <div class="slider-group">
+        <div class="slider-item">
+          <label>
+            <span>Wi-Fi Signal (RSSI)</span>
+            <span class="slider-val" id="lbl-rssi">-48 dBm</span>
+          </label>
+          <input type="range" id="sl-rssi" min="-95" max="-20" value="-48"
+            oninput="updateSlider('rssi', this.value)" />
+        </div>
+
+        <div class="slider-item" id="item-battery">
+          <label>
+            <span>Battery Level</span>
+            <span class="slider-val" id="lbl-battery">100% ⚡ (Continuous power)</span>
+          </label>
+          <input type="range" id="sl-battery" min="0" max="100" value="100" disabled
+            oninput="updateSlider('battery', this.value)" />
+        </div>
+
+        <div class="slider-item" id="item-transformer">
+          <label>
+            <span>Transformer (VAC)</span>
+            <span class="slider-val" id="lbl-transformer">18.0 V</span>
+          </label>
+          <input type="range" id="sl-transformer" min="0" max="28" step="0.5" value="18.0"
+            oninput="updateSlider('transformer', this.value)" />
+        </div>
+
+        <div class="slider-item">
+          <label>
+            <span>WebRTC Jitter</span>
+            <span class="slider-val" id="lbl-jitter">2 ms</span>
+          </label>
+          <input type="range" id="sl-jitter" min="0" max="150" value="2"
+            oninput="updateSlider('jitter', this.value)" />
+        </div>
+
+        <div class="slider-item">
+          <label>
+            <span>Packet Loss</span>
+            <span class="slider-val" id="lbl-loss">0%</span>
+          </label>
+          <input type="range" id="sl-loss" min="0" max="40" value="0"
+            oninput="updateSlider('loss', this.value)" />
+        </div>
+
+        <div class="slider-item">
+          <label>
+            <span>Frame Rate (FPS)</span>
+            <span class="slider-val" id="lbl-fps">30 fps</span>
+          </label>
+          <input type="range" id="sl-fps" min="1" max="30" value="30"
+            oninput="updateSlider('fps', this.value)" />
+        </div>
+
+        <div class="slider-item">
+          <label>
+            <span>Stream Bitrate</span>
+            <span class="slider-val" id="lbl-bitrate">1200 kbps</span>
+          </label>
+          <input type="range" id="sl-bitrate" min="50" max="2000" step="50" value="1200"
+            oninput="updateSlider('bitrate', this.value)" />
+        </div>
+
+        <div class="slider-item">
+          <label>
+            <span>Round-Trip Time (RTT)</span>
+            <span class="slider-val" id="lbl-rtt">18 ms</span>
+          </label>
+          <input type="range" id="sl-rtt" min="0" max="400" value="18"
+            oninput="updateSlider('rtt', this.value)" />
+        </div>
+      </div>
+
+      <div style="margin-top:1rem;">
+        <div class="form-group">
+          <label>Device Model</label>
+          <input type="text" id="c-model" value="Ring Video Doorbell 4" readonly style="opacity:0.85; cursor:default; background:rgba(255,255,255,0.03);" />
+        </div>
+        <div class="form-group">
+          <label>Device ID</label>
+          <input type="text" id="c-devid" value="a1b2c3d4e5f6" readonly style="opacity:0.85; cursor:default; background:rgba(255,255,255,0.03);" />
+        </div>
+        <div class="form-group">
+          <label>Wi-Fi SSID</label>
+          <input type="text" id="c-ssid" value="HomeNetwork_2G" readonly style="opacity:0.85; cursor:default; background:rgba(255,255,255,0.03);" />
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ==================================================================
+       COL 2 ROW 1: STANDBY/ACTIVE VIDEO + METRICS + TRIGGERS
+       ================================================================== -->
+  <section class="main-panel">
+
+    <!-- Ring Camera Monitor with Real-World Lifecycle -->
+    <div class="card">
+      <div class="card-title" style="justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="card-title-icon">🎬</div>
+          Ring Camera Monitor — Official Lifecycle
+        </div>
+        <div style="font-size:0.7rem;color:var(--text-muted);">
+          <span>WHEP / H.264 Stream</span>
+        </div>
+      </div>
+
+      <!-- Monitor Container -->
+      <div class="video-monitor-container" id="video-monitor-container">
+        <!-- Standby Screen (Default) -->
+        <div class="camera-standby-screen" id="camera-standby-screen">
+          <div class="standby-radar">
+            <div class="standby-radar-sweep"></div>
+            <div class="standby-icon">👁️</div>
+          </div>
+          <div class="standby-title">Camera on Standby</div>
+          <div class="standby-subtitle">PIR motion sensor and telemetry heartbeats active in background. Camera wakes on doorbell press, motion, or live view.</div>
+        </div>
+
+        <!-- Active Canvas Stream -->
+        <canvas id="video-canvas"></canvas>
+        <video id="live-video-player" playsinline loop muted
+               style="display:none;position:absolute;width:1px;height:1px;"></video>
+
+        <!-- Top HUD Overlay during Call/Stream -->
+        <div class="video-hud-overlay">
+          <div class="hud-live-indicator" id="hud-live-indicator" style="display:none;">
+            <span class="rec-dot"></span> LIVE • CALL ACTIVE
+          </div>
+          <div class="hud-tag" id="hud-cam-meta">Ring 1080p HDR • 30 FPS</div>
+        </div>
+
+        <!-- Bottom Signal HUD Bar -->
+        <div class="signal-hud-bar">
+          <div class="signal-quality-pill sq-good" id="signal-quality-pill">✅ Excellent Signal</div>
+          <div class="hud-tag" id="hud-fps-live" style="margin-left:auto;">30 FPS</div>
+        </div>
+      </div>
+
+      <!-- Camera Activation Triggers (Real-World Ring Behavior) -->
+      <div class="camera-triggers-bar">
+        <button class="cam-trigger-btn" id="trigger-ding" onclick="simulateDing()">
+          <span>🔔</span> Ring Chime (Ding)
+        </button>
+        <button class="cam-trigger-btn" id="trigger-motion" onclick="simulateMotion()">
+          <span>🚶</span> PIR Motion
+        </button>
+        <button class="cam-trigger-btn" id="trigger-live" onclick="toggleLiveView()">
+          <span>👁️</span> Live View
+        </button>
+        <button class="cam-trigger-btn btn-stop" onclick="deactivateCamera()">
+          <span>⏹️</span> Stop Camera
+        </button>
+      </div>
+
+      <!-- Background Heartbeat Status Card (15s Heartbeats) -->
+      <div class="heartbeat-status-card">
+        <div class="heartbeat-pulse">
+          <div class="hb-dot"></div>
+          <span>Background Telemetry (Heartbeats every 15s):</span>
+          <span class="heartbeat-timer" id="hb-timer">15s</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:0.7rem;color:var(--text-muted)">Anomaly persistence:</span>
+          <span class="persistency-badge ok" id="hb-persistency">0/3 heartbeats</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Real-Time Metrics -->
+    <div class="metrics-grid" id="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-label">Wi-Fi RSSI</div>
+        <div class="metric-value metric-normal" id="m-rssi">-48</div>
+        <div class="metric-unit">dBm</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Battery</div>
+        <div class="metric-value metric-normal" id="m-battery">100</div>
+        <div class="metric-unit">% capacity</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Jitter</div>
+        <div class="metric-value metric-normal" id="m-jitter">2.0</div>
+        <div class="metric-unit">ms (WebRTC)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Packet Loss</div>
+        <div class="metric-value metric-normal" id="m-loss">0.0</div>
+        <div class="metric-unit">% packets</div>
+      </div>
+    </div>
+
+    <!-- Autonomous AI Provider Selector -->
+    <div class="card" style="padding:1rem 1.25rem;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div style="font-weight:600;font-size:0.82rem;">Autonomous AI Reasoning Engine</div>
+          <div style="font-size:0.72rem;color:var(--text-muted);">Diagnoses without manual intervention upon detecting sustained anomalies or degraded sessions</div>
+        </div>
+        <div class="provider-row">
+          <button class="provider-btn" id="prov-groq" onclick="selectProvider('groq')">
+            ⚡ Groq (Llama-4 Scout)
+          </button>
+          <button class="provider-btn active" id="prov-bedrock" onclick="selectProvider('bedrock')">
+            ☁️ AWS Bedrock (Claude)
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ==================================================================
+       COL 2 ROW 2: APP REPORTS & SMART NOTIFICATIONS
+       ================================================================== -->
+  <section class="result-panel card">
+    <div class="card-title" style="justify-content:space-between;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div class="card-title-icon">🩺</div>
+        Diagnostic Console & Ring App Notifications
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <button class="btn-header-action btn-clear-diag" onclick="clearDiagnosticConsole()" title="Clear diagnostic report and alerts">
+          <span>🧹</span> Clear Console
+        </button>
+        <span style="font-size:0.68rem;color:var(--ring-green);font-weight:600;">● Autonomous Mode Active</span>
+      </div>
+    </div>
+
+    <!-- App Push Notification Banner (Dispatched Automatically) -->
+    <div class="app-push-banner" id="app-push-banner">
+      <div class="app-push-icon" id="app-push-icon">⚠️</div>
+      <div class="app-push-content">
+        <div class="app-push-title" id="app-push-title">Ring Alert: Autonomous Notification</div>
+        <div class="app-push-desc" id="app-push-desc">We detected a sustained anomaly on your device.</div>
+        <div class="app-push-meta" id="app-push-meta"></div>
+      </div>
+      <button onclick="closePushBanner()" style="background:none;border:none;color:var(--text-muted);font-size:1.1rem;cursor:pointer;">&times;</button>
+    </div>
+
+    <!-- Nominal Standby Empty State -->
+    <div class="empty-result" id="empty-result">
+      <div class="empty-result-icon">🛡️</div>
+      <div class="empty-result-text">The system operates in nominal silent mode. If a persistent fault occurs (3 sustained heartbeats: 45s) or a degraded session is detected, the official report will appear automatically here.</div>
+    </div>
+
+    <!-- Official Report Content -->
+    <div id="result-content" style="display:none;">
+      <div class="diagnostic-status" id="diag-status-bar">
+        <span class="status-icon" id="diag-icon">✅</span>
+        <div class="status-text">
+          <h2 id="diag-status-text">—</h2>
+          <p id="diag-domain-text">—</p>
+        </div>
+        <div class="confidence-bar">
+          <span class="confidence-label">Confidence</span>
+          <div class="confidence-track">
+            <div class="confidence-fill" id="conf-fill" style="width:0%"></div>
+          </div>
+          <span class="confidence-pct" id="conf-pct">—</span>
+        </div>
+      </div>
+
+      <div class="findings-grid">
+        <div class="findings-block">
+          <h3>📡 Telemetry Findings</h3>
+          <ul class="findings-list" id="telemetry-findings"></ul>
+        </div>
+        <div class="findings-block">
+          <h3>🎥 Visual Findings</h3>
+          <ul class="findings-list" id="visual-findings"></ul>
+        </div>
+      </div>
+
+      <div class="mitigation-box">
+        <h3>💡 Official Recommended Mitigation (Ring Knowledge Base)</h3>
+        <p id="mitigation-text"></p>
+      </div>
+    </div>
+
+  </section>
+
+</main>
+
+<!-- Official Ring Knowledge Base (RAG Modal) -->
+<div class="modal-backdrop" id="kb-modal" onclick="if(event.target===this)closeKbModal()">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h2><span>📚</span> Official Ring Knowledge Base (RAG)</h2>
+      <button class="modal-close" onclick="closeKbModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <input type="text" class="kb-search-box" placeholder="🔍 Search issues by symptom, root cause, or keyword (e.g. pink tint, RSSI, battery, WebRTC)..." oninput="filterKbArticles(this.value)" />
+      <div id="kb-list" style="display:flex;flex-direction:column;gap:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+<!-- Modular Scripts in dependency order -->
+<script src="/web/js/chime-audio.js"></script>
+<script src="/web/js/canvas-engine.js"></script>
+<script src="/web/js/telemetry.js"></script>
+<script src="/web/js/app.js"></script>
+
+</body>
+</html>

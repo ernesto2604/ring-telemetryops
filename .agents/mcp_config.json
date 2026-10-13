@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "ring-appstore-knowledge-mcp-server": {
+      "serverUrl": "https://knowledge.appstore-mcp.ring.amazon.dev/mcp"
+    }
+  }
+}

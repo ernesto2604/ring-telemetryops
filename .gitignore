@@ -29,7 +29,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Environment Variables & Secrets (CRÍTICO: nunca subir credenciales AWS)
+# Environment Variables & Secrets (CRITICAL: never commit AWS or Ring credentials)
 .env
 .env.*
 !.env.example
@@ -48,7 +48,8 @@ data/temp/
 !assets/*.png
 !assets/*.jpg
 
-# Large video sample files (opcional: ignora vídeos pesados salvo las muestras base)
+# Large video sample files (ignore heavy videos except core base samples)
 data/samples/*.mp4
-!data/samples/test_stream_good.mp4
-!data/samples/test_stream_bad.mp4
+!data/samples/good_internet.mp4
+!data/samples/bad_internet.mp4
+!data/samples/optical_obstruction.mp4

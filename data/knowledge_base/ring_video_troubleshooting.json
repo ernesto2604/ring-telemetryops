@@ -1,34 +1,1175 @@
-[
-  {
-    "id": "KB-RING-001",
-    "issue_category": "low_bitrate_and_pixelation",
-    "symptoms": ["Bitrate inferior a 150 kbps", "Artefactos de compresión en bloque", "Resolución inferior a 720p"],
-    "root_cause": "Ancho de banda insuficiente en el canal de subida (upstream) o señal RSSI débil entre el videotimbre y el router.",
-    "diagnostic_steps": [
-      "Verificar el valor RSSI en la app de Ring: si está entre -65 dBm y -90 dBm, la conexión es deficiente.",
-      "Comprobar si el canal Wi-Fi de 2.4 GHz sufre interferencias de otras redes vecinas.",
-      "Realizar un test de velocidad comprobando que la subida supere los 2 Mbps dedicados por cámara."
-    ],
-    "recommended_actions": [
-      "Mover el router más cerca del dispositivo o instalar un Ring Chime Pro / repetidor de señal.",
-      "Cambiar el canal de 2.4 GHz en el router del canal automático a canales no superpuestos (1, 6 u 11).",
-      "Priorizar el tráfico del dispositivo activando Calidad de Servicio (QoS) en el router."
-    ]
+{
+  "knowledge_base_version": "2.1",
+  "knowledge_base_type": "ring_diagnostic_rag",
+  "evidence_policy": {
+    "official": "Fact directly documented by Ring.",
+    "official_inference": "Reasonable diagnostic conclusion derived from Ring documentation, but not a literal Ring statement.",
+    "contextual_only": "Project telemetry that may support diagnosis but has no Ring-published threshold in the reviewed documentation.",
+    "engineering": "Project-specific heuristic. Must never be presented as an official Ring threshold."
   },
-  {
-    "id": "KB-RING-002",
-    "issue_category": "low_frame_rate_stutter",
-    "symptoms": ["FPS inferior a 20", "Saltos temporales en la imagen", "Pérdida de paquetes en el stream"],
-    "root_cause": "Congestión de la red local, fluctuación excesiva de latencia (jitter) o estrangulamiento térmico del dispositivo.",
-    "diagnostic_steps": [
-      "Comprobar el número de dispositivos concurrentes conectados a la banda Wi-Fi del timbre.",
-      "Verificar pérdida de paquetes (packet loss) enviando pings continuos a la IP del dispositivo.",
-      "Comprobar la temperatura operativa del videotimbre si está expuesto a luz solar directa."
-    ],
-    "recommended_actions": [
-      "Separar bandas del router (SSID dedicado para dispositivos IoT en 2.4 GHz).",
-      "Reiniciar el videotimbre Ring manteniendo presionado el botón de configuración durante 20 segundos.",
-      "Actualizar el firmware del dispositivo desde la aplicación para aplicar mejoras en el control de congestión de vídeo."
-    ]
-  }
-]
+  "issues": [
+    {
+      "id": "KB-RING-001",
+      "issue_category": "network",
+      "issue_type": "weak_wifi_signal",
+      "title": "Weak or Unstable Wi-Fi Signal",
+      "root_cause_domain": "NETWORK",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Slow or intermittent Live View",
+        "Low quality video",
+        "Poor audio quality",
+        "Device frequently disconnecting",
+        "Intermittent service dropouts",
+        "Device shows as offline"
+      ],
+      "official_signals": [
+        {
+          "metric": "rssi_dbm",
+          "operator": "range",
+          "value": "0_to_-60",
+          "interpretation": "Great",
+          "diagnostic_weight": 0.0
+        },
+        {
+          "metric": "rssi_dbm",
+          "operator": "range",
+          "value": "-60_to_-70",
+          "interpretation": "Okay",
+          "diagnostic_weight": 0.2
+        },
+        {
+          "metric": "rssi_dbm",
+          "operator": "range",
+          "value": "-70_to_-80",
+          "interpretation": "Poor",
+          "diagnostic_weight": 0.7
+        },
+        {
+          "metric": "rssi_dbm",
+          "operator": "lte",
+          "value": -80,
+          "interpretation": "Very poor",
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_facts": [
+        "Ring states that a weak Wi-Fi signal can cause low-quality video.",
+        "Ring states that a weak Wi-Fi signal can cause a device to fall offline.",
+        "Ring classifies RSSI of -80 dBm or worse as very poor.",
+        "Ring identifies distance, walls, brick, stucco, metal, mirrors and electronic equipment as factors that can weaken Wi-Fi."
+      ],
+      "contextual_metrics": [
+        "bitrate_kbps",
+        "fps",
+        "packet_loss_fraction",
+        "jitter_ms",
+        "rtt_ms"
+      ],
+      "contextual_metric_policy": "Use these metrics as supporting evidence only. Do not apply an invented Ring threshold.",
+      "recommended_actions": [
+        "Check Signal Strength in Ring Device Health.",
+        "Move the Ring device closer to the Wi-Fi router.",
+        "Consider adding a Ring Chime Pro or mesh Wi-Fi extender.",
+        "Check the overall network health and bandwidth usage.",
+        "Restart the router/modem when appropriate."
+      ],
+      "retrieval_keywords": [
+        "weak wifi",
+        "poor wifi",
+        "low RSSI",
+        "weak signal",
+        "offline",
+        "low video quality",
+        "intermittent connection",
+        "rssi",
+        "signal drop",
+        "disconnected",
+        "slow live view",
+        "packet loss"
+      ],
+      "official_sources": [
+        "Understanding Wi-Fi recommendations for Ring devices",
+        "Fixing offline devices",
+        "Fixing audio and video issues"
+      ]
+    },
+    {
+      "id": "KB-RING-002",
+      "issue_category": "network",
+      "issue_type": "poor_device_transmit_speed",
+      "title": "Insufficient Ring Device Transmit Speed",
+      "root_cause_domain": "NETWORK",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Connectivity issues",
+        "Device offline",
+        "Low video quality",
+        "Slow video loading",
+        "Stream freezing or dropouts during playback"
+      ],
+      "official_signals": [
+        {
+          "metric": "device_transmit_speed_mbps",
+          "operator": "gt",
+          "value": 20,
+          "interpretation": "GOOD",
+          "diagnostic_weight": 0.0
+        },
+        {
+          "metric": "device_transmit_speed_mbps",
+          "operator": "between",
+          "value": [
+            10,
+            20
+          ],
+          "interpretation": "OKAY",
+          "diagnostic_weight": 0.4
+        },
+        {
+          "metric": "device_transmit_speed_mbps",
+          "operator": "lt",
+          "value": 10,
+          "interpretation": "POOR",
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_error_codes": [
+        "W4-05"
+      ],
+      "official_facts": [
+        "Ring states that Device Transmit Speed measures the speed between the Ring device and router.",
+        "Ring classifies Device Transmit Speed above 20 Mbps as GOOD.",
+        "Ring classifies Device Transmit Speed between 10 and 20 Mbps as OKAY.",
+        "Ring classifies Device Transmit Speed below 10 Mbps as POOR.",
+        "Ring states that poor transmit speed can cause connectivity issues, offline status, or low video quality."
+      ],
+      "recommended_actions": [
+        "Check Device Transmit Speed in Ring Device Health.",
+        "Move the Ring device closer to the Wi-Fi router.",
+        "Verify there are no dense walls or metal obstructions between device and router.",
+        "Consider a Ring Chime Pro or Wi-Fi mesh node.",
+        "Check if other devices on the network are saturating bandwidth.",
+        "Restart router and Ring device."
+      ],
+      "retrieval_keywords": [
+        "device transmit speed",
+        "transmit speed",
+        "tx speed",
+        "slow speed",
+        "poor connection",
+        "slow streaming",
+        "low bandwidth"
+      ],
+      "official_sources": [
+        "Finding your Ring device's transmit speed"
+      ]
+    },
+    {
+      "id": "KB-RING-003",
+      "issue_category": "network",
+      "issue_type": "poor_internet_upload_speed",
+      "title": "Insufficient Internet Upload Speed",
+      "root_cause_domain": "INTERNET",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Slow video loading",
+        "Video stream freezing or stuttering",
+        "Poor audio quality",
+        "Device disconnecting",
+        "Failed Live View attempts"
+      ],
+      "official_signals": [
+        {
+          "metric": "internet_upload_speed_mbps",
+          "operator": "gt",
+          "value": 10,
+          "interpretation": "GOOD",
+          "diagnostic_weight": 0.0
+        },
+        {
+          "metric": "internet_upload_speed_mbps",
+          "operator": "between",
+          "value": [
+            5,
+            10
+          ],
+          "interpretation": "OKAY",
+          "diagnostic_weight": 0.4
+        },
+        {
+          "metric": "internet_upload_speed_mbps",
+          "operator": "lt",
+          "value": 5,
+          "interpretation": "POOR",
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_error_codes": [
+        "W4-04"
+      ],
+      "official_facts": [
+        "Ring states that Internet Upload Speed measures the speed from your router to the internet.",
+        "Ring classifies Internet Upload Speed above 10 Mbps as GOOD.",
+        "Ring classifies Internet Upload Speed between 5 and 10 Mbps as OKAY.",
+        "Ring classifies Internet Upload Speed below 5 Mbps as POOR.",
+        "Ring states that poor upload speed can cause slow video, freezing, poor audio, or disconnections."
+      ],
+      "recommended_actions": [
+        "Check Internet Upload Speed in Ring Device Health.",
+        "Run an internet speed test on the local network.",
+        "Disconnect unnecessary devices using high upload bandwidth (cloud backups, torrents).",
+        "Contact your Internet Service Provider (ISP) to verify upstream bandwidth."
+      ],
+      "retrieval_keywords": [
+        "upload speed",
+        "internet speed",
+        "slow upload",
+        "isp bandwidth",
+        "video freezing",
+        "stuttering stream",
+        "low upstream"
+      ],
+      "official_sources": [
+        "Finding your Internet Upload Speed"
+      ]
+    },
+    {
+      "id": "KB-RING-004",
+      "issue_category": "connectivity",
+      "issue_type": "device_offline",
+      "title": "Ring Device Disconnected or Offline",
+      "root_cause_domain": "CONNECTIVITY",
+      "evidence_level": "official",
+      "priority": "critical",
+      "symptoms": [
+        "Device appears offline in the Ring app",
+        "No alerts or motion events received",
+        "Live View will not open",
+        "White/blue LED ring flashing or unresponsive",
+        "Device stopped recording suddenly"
+      ],
+      "official_signals": [
+        {
+          "metric": "device_online",
+          "operator": "equals",
+          "value": false,
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}/status",
+          "field": "online"
+        }
+      ],
+      "official_facts": [
+        "Ring states that a weak Wi-Fi signal can cause a device to fall offline.",
+        "Ring states that power failure or a drained battery will cause an offline state.",
+        "Ring states that router configuration changes (SSID, password) cause devices to go offline.",
+        "Ring notes that devices will attempt reconnection once power and Wi-Fi are restored."
+      ],
+      "possible_contributing_domains": [
+        "NETWORK",
+        "POWER",
+        "BATTERY",
+        "SETUP"
+      ],
+      "recommended_actions": [
+        "Check power status (battery charge level or transformer voltage in Device Health).",
+        "Check Wi-Fi router status and confirm internet is accessible on other devices.",
+        "If Wi-Fi network credentials changed, tap 'Reconnect to Wi-Fi' in Device Health.",
+        "Move router closer or add a Ring Chime Pro if signal is weak.",
+        "Power cycle the Ring device.",
+        "Perform a setup reset by holding the setup button for 20 seconds if it fails to reconnect."
+      ],
+      "retrieval_keywords": [
+        "offline",
+        "disconnected",
+        "device offline",
+        "not connecting",
+        "no connection",
+        "network down",
+        "reconnect wifi",
+        "setup button",
+        "device unreachable"
+      ],
+      "official_sources": [
+        "Fixing offline devices",
+        "Ring Partner API Documentation"
+      ]
+    },
+    {
+      "id": "KB-RING-005",
+      "issue_category": "video",
+      "issue_type": "low_video_quality",
+      "title": "Poor Video Quality, Blurry, Washed Out, or Overexposed",
+      "root_cause_domain": "VIDEO",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Blurry or out-of-focus image",
+        "Washed out, bleached, or excessively bright picture",
+        "Dark or underexposed video",
+        "Pixelated or blocky video artifacts",
+        "Distorted colors or magenta/pink tint",
+        "Dirty or smudged lens view",
+        "Low sharpness score during inspection"
+      ],
+      "official_facts": [
+        "Ring states that weak Wi-Fi signal can cause pixelated and degraded video streams.",
+        "Ring states that dirty or smudged optical lenses cause blur, fog, and light glare.",
+        "Ring notes that direct sunlight shining into the camera lens can cause severe overexposure.",
+        "Ring cameras adjust exposure automatically based on lighting conditions in the field of view.",
+        "A stuck mechanical IR cut filter causes a pink or purple discoloration in daylight.",
+        "Condensation or moisture inside or outside the lens housing degrades optical sharpness."
+      ],
+      "diagnostic_features": {
+        "visual": [
+          "blur",
+          "pixelation",
+          "washed_out",
+          "overexposed",
+          "dark_image",
+          "obstruction",
+          "condensation"
+        ],
+        "telemetry": [
+          "rssi_dbm",
+          "device_transmit_speed_mbps",
+          "internet_upload_speed_mbps"
+        ],
+        "video_metrics": [
+          "bitrate_kbps",
+          "fps",
+          "resolution",
+          "sharpness",
+          "mean_brightness"
+        ]
+      },
+      "metric_policy": {
+        "bitrate_kbps": "contextual_only",
+        "fps": "contextual_only",
+        "sharpness": "contextual_only",
+        "mean_brightness": "contextual_only"
+      },
+      "important_constraint": "No Ring-published threshold was established for bitrate, FPS or OpenCV sharpness in the reviewed documentation.",
+      "recommended_actions": [
+        "Gently clean the camera lens with a soft, clean microfiber cloth.",
+        "Check Wi-Fi signal strength (RSSI) in Ring Device Health.",
+        "Inspect physical mounting angle; adjust with a Wedge or Corner Kit to avoid direct sunlight or bright walls.",
+        "Power cycle the device to reset the mechanical IR cut filter if pink tint is observed.",
+        "Check for condensation or physical lens scratches.",
+        "Ensure lens protective shipping film was peeled off during initial installation.",
+        "Verify adequate lighting in the monitored area."
+      ],
+      "retrieval_keywords": [
+        "blurry video",
+        "poor video quality",
+        "washed out",
+        "overexposed",
+        "dark video",
+        "pixelated",
+        "dirty lens",
+        "pink screen",
+        "optical blur",
+        "sharpness",
+        "focus",
+        "smudge"
+      ],
+      "official_sources": [
+        "Fixing audio and video issues",
+        "Understanding Wi-Fi recommendations for Ring devices"
+      ]
+    },
+    {
+      "id": "KB-RING-006",
+      "issue_category": "video",
+      "issue_type": "live_view_or_recording_unavailable",
+      "title": "Live View or Video Recordings Unavailable",
+      "root_cause_domain": "VIDEO_ACCESS",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Live View streaming fails with 'Streaming error' or 'Tap to retry'",
+        "Black screen or infinite loading spinner when opening Live View",
+        "Recorded video clips missing or showing 0-second length",
+        "Live View times out after 10-15 seconds of buffering",
+        "Unable to activate Two-Way Talk"
+      ],
+      "official_facts": [
+        "Ring states that weak Wi-Fi signal is the primary cause of Live View timeouts and failed connections.",
+        "Ring requires a minimum 2 Mbps upload and download speed per 1080p device (4 Mbps for 4K/Pro models).",
+        "Active Ring Protect subscription or trial is required to view historical video recordings in the cloud.",
+        "Aggressive router firewalls or blocked WebRTC ports (UDP 10000-20000, TCP 8555/443) prevent video egress.",
+        "Ring devices enter deep sleep or low-power state if battery drops below critical threshold (e.g., < 10%).",
+        "WebRTC / WHEP session tokens expire after duration limits or when conflicting sessions open simultaneously."
+      ],
+      "diagnostic_signals": [
+        {
+          "condition": "device_online == false",
+          "interpretation": "Connectivity issue is strongly indicated."
+        },
+        {
+          "condition": "ring_plan_active == false",
+          "interpretation": "Recording availability may be explained by subscription state."
+        },
+        {
+          "condition": "vpn_enabled == true",
+          "interpretation": "VPN may interfere with retrieval."
+        },
+        {
+          "condition": "rssi_dbm <= -80",
+          "interpretation": "Official Ring Wi-Fi category is Very Poor."
+        }
+      ],
+      "recommended_actions": [
+        "Check RSSI and Wi-Fi health in Ring Device Health.",
+        "Verify device battery level or hardwired transformer power supply.",
+        "Confirm active Ring Home / Ring Protect plan for event history playback.",
+        "Check router firewall settings and ensure outbound WebRTC/UDP traffic is permitted.",
+        "Reboot router and test connection using Ring app on mobile cellular data.",
+        "Power cycle the Ring doorbell or camera."
+      ],
+      "retrieval_keywords": [
+        "live view failed",
+        "streaming error",
+        "tap to retry",
+        "black screen",
+        "recording missing",
+        "live view timeout",
+        "webrtc stream",
+        "cloud recording",
+        "playback error",
+        "loading spinner"
+      ],
+      "official_sources": [
+        "Fixing audio and video issues",
+        "Live View for doorbells and cameras"
+      ]
+    },
+    {
+      "id": "KB-RING-007",
+      "issue_category": "video",
+      "issue_type": "night_vision_or_image_color_issue",
+      "title": "Night Vision, Color, IR Filter, or Glare Issues",
+      "root_cause_domain": "VIDEO_OPTICS",
+      "evidence_level": "official",
+      "priority": "medium",
+      "symptoms": [
+        "Black and white image during daylight hours",
+        "Pink or magenta hue across daytime video",
+        "Unnatural or distorted color rendering",
+        "Pitch black video at night despite nominal Wi-Fi network",
+        "White glare halo or light reflection washout at night",
+        "Image washed out by infrared light reflecting off adjacent wall or roof eave"
+      ],
+      "official_facts": [
+        "Ring devices automatically adapt their night vision according to available ambient light.",
+        "Some Ring devices switch to infrared black-and-white imaging in low light conditions.",
+        "Color Night Vision requires ambient lighting (e.g. porch light, street lamp) to synthesize color.",
+        "Infrared LEDs reflecting off a nearby wall, siding, brick, or overhang will blind the sensor and cause washouts.",
+        "A stuck internal IR cut filter prevents the camera from returning to standard color mode in daylight.",
+        "High-contrast scenes (bright sunny background with dark porch) challenge dynamic range adjustments.",
+        "Covering or obstructing the ambient light sensor triggers night mode prematurely.",
+        "LED porch lights operating on PWM can produce optical stroboscopic bands."
+      ],
+      "visual_retrieval_features": [
+        "pink_tint",
+        "purple_tint",
+        "black_and_white_daytime",
+        "night_glare",
+        "washed_out",
+        "infrared_appearance",
+        "dark_video",
+        "ir_reflection",
+        "halo_blanco"
+      ],
+      "metric_policy": {
+        "mean_brightness": "contextual_only",
+        "sharpness": "contextual_only",
+        "led_status": "official_inference"
+      },
+      "recommended_actions": [
+        "Check Wi-Fi signal strength in Ring Device Health.",
+        "Verify the monitored area has adequate ambient light for Color Night Vision.",
+        "Install a Wedge or Corner Kit to aim the camera away from adjacent walls or reflective surfaces.",
+        "Power cycle the Ring device to unstick the mechanical IR filter.",
+        "Toggle Color Night Vision off and on in Ring app Video Settings.",
+        "Gently wipe down the lens and infrared emitter array with a microfiber cloth."
+      ],
+      "retrieval_keywords": [
+        "night vision",
+        "ir filter",
+        "pink tint",
+        "magenta screen",
+        "black and white daylight",
+        "color night vision",
+        "wall glare",
+        "ir glare",
+        "infrared reflection",
+        "stuck filter",
+        "dark night video",
+        "halo reflection",
+        "wedge kit",
+        "corner kit",
+        "ambient light",
+        "overhang glare"
+      ],
+      "official_sources": [
+        "Night Vision in Ring devices",
+        "Fixing audio and video issues",
+        "Using Mounting Accessories (Corner Kit and Wedge Kit)"
+      ]
+    },
+    {
+      "id": "KB-RING-008",
+      "issue_category": "audio",
+      "issue_type": "no_audio_or_two_way_talk_failure",
+      "title": "Missing Audio or Two-Way Talk Issues",
+      "root_cause_domain": "AUDIO",
+      "evidence_level": "official",
+      "priority": "medium",
+      "symptoms": [
+        "User cannot hear audio from visitor at the door",
+        "Visitor cannot hear user speaking through Ring device",
+        "Complete silence during Live View and cloud recordings",
+        "Audio is muted or muffled",
+        "Recorded event videos have no sound track",
+        "Severe voice delay, audio jitter, or acoustic feedback echo"
+      ],
+      "official_facts": [
+        "Ring documents no audio during Live View or recorded events when microphone permissions are denied.",
+        "Ring documents situations where the user cannot hear a visitor or the visitor cannot hear the user.",
+        "Microphone toggle and speaker toggle in the Ring app control two-way stream audio transmission.",
+        "Severe packet loss or jitter over Wi-Fi causes audio dropouts and acoustic distortion.",
+        "Dirty or water-clogged microphone pinholes muffle incoming sound.",
+        "Two-Way Talk uses full-duplex WebRTC audio; low network bandwidth forces audio codecs to drop frames."
+      ],
+      "diagnostic_signals": [
+        {
+          "metric": "microphone_permission",
+          "expected": true
+        },
+        {
+          "metric": "audio_streaming_enabled",
+          "expected": true
+        },
+        {
+          "metric": "audio_recording_enabled",
+          "expected": true
+        },
+        {
+          "metric": "live_view_microphone_muted",
+          "expected": false
+        },
+        {
+          "metric": "live_view_speaker_muted",
+          "expected": false
+        }
+      ],
+      "contextual_metrics": [
+        "packet_loss_fraction",
+        "jitter_ms",
+        "rtt_ms"
+      ],
+      "contextual_metric_policy": "WebRTC statistics may support an engineering diagnosis, but Ring thresholds for packet loss, jitter and RTT must not be invented.",
+      "recommended_actions": [
+        "Check phone/tablet volume and ensure mute switch is off.",
+        "Check Ring microphone permissions in mobile device OS settings.",
+        "Verify speaker and microphone icons are unmuted in Live View screen.",
+        "Inspect physical Ring device; ensure microphone holes and speaker grille are clean and dry.",
+        "Check Wi-Fi signal strength (RSSI) and network packet loss.",
+        "Test Two-Way Talk on mobile cellular data to rule out local network multicast/SIP filtering.",
+        "Power cycle the Ring device."
+      ],
+      "retrieval_keywords": [
+        "no audio",
+        "two way talk",
+        "cannot hear visitor",
+        "visitor cannot hear me",
+        "muted sound",
+        "microphone issue",
+        "speaker issue",
+        "muffled voice",
+        "echo",
+        "audio jitter",
+        "sound cutout",
+        "talk button"
+      ],
+      "official_sources": [
+        "Fixing audio and video issues",
+        "Live View for doorbells and cameras"
+      ]
+    },
+    {
+      "id": "KB-RING-009",
+      "issue_category": "power",
+      "issue_type": "incorrect_or_insufficient_hardwired_power",
+      "title": "Insufficient Power, Critical Battery, or Inadequate Transformer",
+      "root_cause_domain": "POWER",
+      "evidence_level": "official",
+      "priority": "critical",
+      "symptoms": [
+        "Device reboots spontaneously during ring press or motion event",
+        "Hardwired doorbell not charging internal battery (drops consistently)",
+        "In-home mechanical chime hums or buzzes without striking",
+        "Live View shuts down after a few seconds due to power dip",
+        "Battery at critical percentage (< 10%) despite being wired",
+        "Advanced features (HDR, Pre-Roll) disabled due to low power"
+      ],
+      "official_facts": [
+        "Ring states that hardwired devices require a compatible power source (typically 16-24 VAC, 10-40 VA).",
+        "Ring states that incorrect transformer ratings can stop devices or in-home chimes from working correctly.",
+        "Ring Video Doorbells connected to low-voltage transformers (< 16 VAC under load) suffer brownout reboot loops.",
+        "Lithium-ion batteries inside Ring devices cannot charge in freezing temperatures (below 0°C / 32°F).",
+        "A drained battery takes 6 to 8 hours to reach full charge via micro-USB / USB-C charging cable.",
+        "Bypassing the in-home chime with a Pro Power Kit is mandatory for Ring Video Doorbell Pro models."
+      ],
+      "official_power_requirements": [
+        {
+          "device_type": "Wired (Pro/Elite)",
+          "voltage": "16-24 VAC",
+          "va": "10-40 VA"
+        },
+        {
+          "device_type": "Battery-powered (Doorbell 1/2/3/4)",
+          "voltage": "8-24 VAC",
+          "va": "5-40 VA"
+        },
+        {
+          "device_type": "Multiple doorbells on same transformer",
+          "voltage": "16 VAC",
+          "va": "30 VA"
+        }
+      ],
+      "important_constraint": "Do not use a generic transformer threshold such as 14 VAC. Ring's documented requirements depend on the specific device and configuration.",
+      "diagnostic_metrics": [
+        "transformer_voltage_vac",
+        "battery_percentage",
+        "battery_saver_low_voltage",
+        "device_type"
+      ],
+      "recommended_actions": [
+        "Identify the exact Ring device model and check its power requirements.",
+        "Check transformer voltage and VA rating in Device Health (must be 16-24 VAC).",
+        "For battery models, remove battery and recharge fully with a 5V/2A charger before reinserting.",
+        "If operating in freezing weather, bring battery indoors to warm up and charge.",
+        "Install an upgraded doorbell transformer (e.g. Ring Plug-In Adapter or 16V 30VA transformer).",
+        "Verify Pro Power Kit or jumper cable installation on mechanical chime terminals."
+      ],
+      "retrieval_keywords": [
+        "power issue",
+        "transformer voltage",
+        "battery drain",
+        "battery not charging",
+        "chime humming",
+        "doorbell rebooting",
+        "low voltage",
+        "cold weather battery",
+        "pro power kit",
+        "hardwired power",
+        "16 vac",
+        "insufficient power",
+        "battery critical",
+        "brownout",
+        "freezing battery",
+        "plug in adapter",
+        "power supply"
+      ],
+      "official_sources": [
+        "Troubleshooting power for hardwired doorbells",
+        "Ring devices and extreme temperatures"
+      ]
+    },
+    {
+      "id": "KB-RING-010",
+      "issue_category": "motion_and_notifications",
+      "issue_type": "missed_motion_events_or_notifications",
+      "title": "Missed Motion Events or Push Notifications",
+      "root_cause_domain": "MOTION_NOTIFICATIONS",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "No motion push notifications received on smartphone",
+        "Doorbell fails to capture people walking up to the door",
+        "Device captures too many false alarms (passing cars, tree shadows)",
+        "Recording exists in Event History but notification was never delivered",
+        "Notification delayed by 30 to 60 seconds after event occurred"
+      ],
+      "official_facts": [
+        "Motion Detection must be enabled for a Ring device to detect and record motion events.",
+        "An offline Ring device will not detect motion or deliver notifications.",
+        "Push notifications require OS-level permissions for the Ring application.",
+        "Do Not Disturb, Battery Optimization, or Focus modes on mobile devices block push alerts.",
+        "PIR motion sensors detect thermal signatures; high ambient heat reduces detection sensitivity.",
+        "Radar-based 3D Motion Detection requires correct distance and bird's eye view threshold tuning.",
+        "Motion Frequency set to 'Regularly' or 'Periodically' introduces cooldown periods to save battery.",
+        "Custom Motion Zones must cover target approach paths while excluding distant streets.",
+        "Smart Alerts (Person vs Other Motion) filter out recordings when person verification fails.",
+        "Wi-Fi latency or high packet loss delays push notification delivery from AWS APNS/FCM servers.",
+        "Motion Snooze feature temporarily suppresses notifications for preset durations."
+      ],
+      "diagnostic_signals": [
+        {
+          "metric": "device_online",
+          "expected": true,
+          "failure_effect": "No motion detection while offline."
+        },
+        {
+          "metric": "motion_detection_enabled",
+          "expected": true
+        },
+        {
+          "metric": "rssi_dbm",
+          "interpretation": "Use Ring Wi-Fi categories. Poor signal can delay or prevent event capture."
+        },
+        {
+          "metric": "motion_zones",
+          "interpretation": "Check whether the target area is included in at least one zone."
+        },
+        {
+          "metric": "motion_schedule_active",
+          "interpretation": "Check whether detection is currently disabled by a schedule."
+        }
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "relevant_data": [
+            "motion zones",
+            "privacy zones",
+            "image settings"
+          ]
+        },
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/history/devices/{device_id}/events",
+          "relevant_data": [
+            "motion events",
+            "device activity"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Ensure Motion Detection is enabled in the Ring app.",
+        "Check and redraw Motion Zones to include target walkways and exclude busy roadways.",
+        "Verify push notification permissions for the Ring app in smartphone operating system settings.",
+        "Disable Battery Saver / Low Power Mode restrictions for the Ring app on mobile.",
+        "Check Motion Frequency settings; set to 'Frequently' if missing quick events.",
+        "Adjust Smart Alerts sensitivity and toggle Person Detection.",
+        "Check Wi-Fi RSSI to ensure alerts are transmitted without network delay.",
+        "Confirm Motion Snooze is not active in the app dashboard.",
+        "Verify device mounting height (recommended 1.2 meters / 48 inches above ground for PIR coverage).",
+        "Reboot the Ring device and smartphone."
+      ],
+      "retrieval_keywords": [
+        "missed motion",
+        "no notification",
+        "push alert missing",
+        "motion delay",
+        "false motion",
+        "motion zones",
+        "pir sensor",
+        "smart alerts",
+        "person detection",
+        "notification delayed",
+        "motion frequency",
+        "3d motion",
+        "motion snooze",
+        "motion sensitivity",
+        "event history",
+        "motion detection off",
+        "fcm apns"
+      ],
+      "official_sources": [
+        "Using Motion Detection",
+        "Troubleshooting notifications from Ring",
+        "Optimising Motion Detection",
+        "Ring Partner API Documentation"
+      ]
+    },
+    {
+      "id": "KB-RING-011",
+      "issue_category": "power_solar",
+      "issue_type": "solar_panel_not_charging",
+      "title": "Solar Panel Not Charging Ring Doorbell or Camera Battery",
+      "root_cause_domain": "ENVIRONMENT_POWER",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Doorbell battery discharges despite solar panel being plugged in",
+        "Device Health reports Solar Status as 'Not Connected' or disconnected",
+        "Battery percentage never rises above 90%",
+        "Device switches to battery saver mode during daylight hours"
+      ],
+      "official_signals": [
+        {
+          "metric": "battery_percentage",
+          "operator": "gte",
+          "value": 90,
+          "interpretation": "Normal documented behavior: Ring solar chargers do not start charging if battery exceeds 90% to protect lithium-ion lifespan.",
+          "diagnostic_weight": 0.0
+        },
+        {
+          "metric": "battery_percentage",
+          "operator": "lt",
+          "value": 20,
+          "interpretation": "Critically low battery with solar panel connected: possible solar shading, loose cable, or unsupported accessory.",
+          "diagnostic_weight": 0.9
+        },
+        {
+          "metric": "battery_saver_low_voltage",
+          "operator": "eq",
+          "value": true,
+          "interpretation": "Insufficient voltage detected on solar charging circuit.",
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_facts": [
+        "Ring states that Solar Chargers and Solar Panels require at least 3 to 4 hours of direct sunlight daily to maintain battery charge.",
+        "Ring states that solar chargers will not begin charging the battery until the charge level drops below 90% to preserve lithium-ion battery health.",
+        "Extreme temperatures (below 0°C / 32°F or above 48°C / 120°F) halt solar charging to protect internal battery cells.",
+        "Solar panels provide a trickle charge to maintain battery level; they cannot instantly recharge a completely depleted battery.",
+        "Dust, pollen, snow, or tree debris covering solar photovoltaic cells drastically reduces power output."
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}",
+          "relevant_data": [
+            "attributes.battery_percentage",
+            "attributes.power_source",
+            "attributes.solar_status"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Verify battery charge is below 90%; above this threshold the solar panel remains idle by design.",
+        "Ensure the solar panel receives at least 3 to 4 hours of unshaded direct sunlight daily.",
+        "Clean the solar panel surface with a damp soft cloth to remove dust and debris.",
+        "Inspect the micro-USB / barrel jack connector and ensure it is firmly seated and weather-sealed.",
+        "If battery is fully depleted, remove it and charge to 100% via wall outlet before reconnecting solar."
+      ],
+      "retrieval_keywords": [
+        "solar panel",
+        "solar charger",
+        "battery not charging solar",
+        "solar status not connected",
+        "direct sunlight",
+        "solar trickle charge",
+        "clean solar panel",
+        "barrel plug",
+        "90 percent threshold",
+        "solar discharge"
+      ],
+      "official_sources": [
+        "Troubleshooting Solar Chargers and Solar Panels for Ring Doorbells",
+        "Ring Help Center: Extreme temperatures and battery charging",
+        "Ring Developer Experience Documentation"
+      ]
+    },
+    {
+      "id": "KB-RING-012",
+      "issue_category": "poe_network",
+      "issue_type": "ring_elite_poe_power_or_link_loss",
+      "title": "Ethernet Link Loss or Power Failure on Ring Video Doorbell Elite (PoE)",
+      "root_cause_domain": "HARDWARE_NETWORK",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Ring Doorbell Elite appears offline in the app despite LED ring being lit",
+        "PoE switch port shows no data link activity (link LED off)",
+        "Device reboots intermittently whenever a call or Live View is started",
+        "Total loss of network connectivity after switching router or PoE injector"
+      ],
+      "official_signals": [
+        {
+          "metric": "poe_standard",
+          "operator": "eq",
+          "value": "passive_24v",
+          "interpretation": "Incompatible: Ring Elite requires active IEEE 802.3af or 802.3at standard (48V nominal). Passive PoE causes instability or hardware damage.",
+          "diagnostic_weight": 1.0
+        },
+        {
+          "metric": "packet_loss_fraction",
+          "operator": "gt",
+          "value": 0.15,
+          "interpretation": "Severe packet loss on Ethernet cabling: damaged Cat5e/Cat6 cable or improperly crimped RJ45 plug.",
+          "diagnostic_weight": 0.8
+        }
+      ],
+      "official_facts": [
+        "Ring Video Doorbell Elite is powered exclusively by Power over Ethernet (PoE) and requires standard IEEE 802.3af or 802.3at compliant switches or injectors.",
+        "Ring specifies that passive PoE or non-standard injectors can power the LED ring but fail to deliver sufficient current during video transmission, leading to brownout reboot loops.",
+        "Ethernet cable runs exceeding 100 meters (328 ft) or damaged Cat5e/Cat6 pairs cause link negotiation drops and voltage sag.",
+        "PoE negotiation relies on 48V active handshake; unmanaged switches with power budget exhaustion drop port power under load."
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}",
+          "relevant_data": [
+            "attributes.network_connection_type",
+            "attributes.online_status"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Verify PoE switch or injector strictly complies with the IEEE 802.3af or 802.3at standard (48V active PoE).",
+        "Disconnect Ethernet cable from PoE injector/switch for 30 seconds and reconnect to power cycle the port.",
+        "Test Ethernet cable continuity with a RJ45 cable tester to verify all 8 conductors are intact.",
+        "Check PoE switch power budget to confirm the port has at least 15.4W allocated for the Elite doorbell."
+      ],
+      "retrieval_keywords": [
+        "poe",
+        "ring elite",
+        "power over ethernet",
+        "ethernet link down",
+        "ieee 802.3af",
+        "poe injector",
+        "rj45 cable",
+        "reboot under load",
+        "doorbell elite offline",
+        "switch power budget",
+        "active poe"
+      ],
+      "official_sources": [
+        "Troubleshooting Ring Video Doorbell Elite",
+        "Ring Video Doorbell Elite Setup and Power Specifications",
+        "Ring Developer Experience Documentation"
+      ]
+    },
+    {
+      "id": "KB-RING-013",
+      "issue_category": "chime_hardware",
+      "issue_type": "in_home_chime_failure",
+      "title": "In-Home Mechanical or Digital Chime Not Ringing on Doorbell Press",
+      "root_cause_domain": "CHIME_HARDWARE",
+      "evidence_level": "official",
+      "priority": "medium",
+      "symptoms": [
+        "Exterior Ring doorbell rings and sends app notification, but indoor house chime does not ring",
+        "Indoor chime emits a continuous hum or buzz without striking the tone bell",
+        "Indoor chime rings weakly, intermittently, or with distorted tones"
+      ],
+      "official_signals": [
+        {
+          "metric": "transformer_voltage_vac",
+          "operator": "lt",
+          "value": 16.0,
+          "interpretation": "Insufficient transformer voltage to simultaneously power Ring doorbell electronics and mechanical chime solenoid.",
+          "diagnostic_weight": 0.85
+        },
+        {
+          "metric": "chime_type_setting",
+          "operator": "eq",
+          "value": "none",
+          "interpretation": "Setting disabled in Ring App: In-Home Chime Type configured as None/Disabled.",
+          "diagnostic_weight": 1.0
+        }
+      ],
+      "official_facts": [
+        "Ring doorbells require the correct In-Home Chime Type setting in the Ring App: Mechanical (solenoid chime) or Digital (electronic melody chime).",
+        "In hardwired installations, when the doorbell button is pressed, the Ring device bridges the circuit; if transformer voltage drops below 16 VAC under load, the solenoid will hum instead of striking.",
+        "Digital electronic chimes require setting a chime ring duration (typically 2 to 5 seconds) to play the chime audio file.",
+        "Failure to install the included Pro Power Kit or terminal jumper can cause chime humming and damage the transformer."
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "relevant_data": [
+            "configurations.chime_type",
+            "configurations.chime_duration_ms"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Open Ring App, navigate to Device Settings > In-Home Chime Settings, and verify Mechanical or Digital chime is selected.",
+        "For digital chimes, verify ring duration setting in the app allows sufficient time to play the full melody.",
+        "Inspect in-home chime transformer voltage under load (must maintain >= 16 VAC).",
+        "Verify terminal wiring and confirm Pro Power Kit / jumper wire is installed correctly across chime terminals.",
+        "Check chime compatibility list on Ring Help Center to ensure chime model is supported."
+      ],
+      "retrieval_keywords": [
+        "in-home chime",
+        "mechanical chime",
+        "digital chime",
+        "chime not ringing",
+        "humming chime",
+        "solenoid chime",
+        "pro power kit",
+        "chime duration",
+        "transformer voltage",
+        "indoor chime",
+        "doorbell chime"
+      ],
+      "official_sources": [
+        "In-home chime not ringing with Ring Doorbell",
+        "Installing the Ring Pro Power Kit",
+        "Troubleshooting Ring Chime and Chime Pro"
+      ]
+    },
+    {
+      "id": "KB-RING-014",
+      "issue_category": "video_optics",
+      "issue_type": "led_frequency_flickering_banding",
+      "title": "Flickering or Horizontal Video Banding from LED Lighting (50Hz / 60Hz)",
+      "root_cause_domain": "VIDEO_OPTICS",
+      "evidence_level": "official",
+      "priority": "medium",
+      "symptoms": [
+        "Flickering horizontal dark bands or rolling lines moving across Live View video",
+        "Stroboscopic effect visible in video whenever porch light or fixture is illuminated",
+        "Video stream is crisp and clean when porch illumination is switched off"
+      ],
+      "official_signals": [
+        {
+          "metric": "packet_loss_fraction",
+          "operator": "lte",
+          "value": 0.02,
+          "interpretation": "Excellent network and WebRTC metrics: flickering does NOT originate from packet loss or insufficient bandwidth.",
+          "diagnostic_weight": 0.0
+        },
+        {
+          "metric": "optical_banding_detected",
+          "operator": "eq",
+          "value": true,
+          "interpretation": "Rolling shutter stroboscopic banding detected on optical CMOS sensor matching AC power grid frequency of 50Hz or 60Hz.",
+          "diagnostic_weight": 0.95
+        }
+      ],
+      "official_facts": [
+        "Ring explains that flickering horizontal dark bands (banding) are caused by the optical rolling shutter sensor syncing with pulse-width modulated (PWM) LED porch lights.",
+        "Discrepancies between camera anti-flicker frequency (50 Hz in Europe/UK vs 60 Hz in Americas) and domestic AC grid frequency generate visible strobe artifacts.",
+        "Cheap or non-dimmable LED bulbs operating on dimmer switches exacerbate electrical ripple and optical flicker.",
+        "Anti-flicker algorithm adjusts sensor shutter speed to an exact multiple of the AC line power frequency."
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "relevant_data": [
+            "configurations.video_frequency",
+            "configurations.anti_flicker_mode"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Check if flickering ceases when turning off porch light or nearby lamp fixture.",
+        "In Ring camera Video Settings, adjust Anti-Flicker mode to match local power grid (50 Hz for Europe/UK, 60 Hz for Americas).",
+        "Replace low-cost or non-regulated LED porch bulbs with high-quality flicker-free LED fixtures.",
+        "Ensure porch light dimmer switches are set to 100% or use dimmable-rated LED driver units."
+      ],
+      "retrieval_keywords": [
+        "flicker",
+        "banding",
+        "horizontal lines",
+        "rolling shutter",
+        "50hz 60hz",
+        "anti-flicker",
+        "led light flicker",
+        "strobe video",
+        "porch light banding",
+        "pwm led",
+        "ac frequency"
+      ],
+      "official_sources": [
+        "Video flickering or banding on Ring Doorbells and Security Cameras",
+        "Ring Developer Experience: Video Pipeline Specifications"
+      ]
+    },
+    {
+      "id": "KB-RING-015",
+      "issue_category": "webrtc_streaming",
+      "issue_type": "whep_session_negotiation_failure",
+      "title": "WebRTC / WHEP Live View Negotiation Failure or E2EE Block",
+      "root_cause_domain": "NETWORK_WEBRTC",
+      "evidence_level": "official",
+      "priority": "high",
+      "symptoms": [
+        "Streaming error 'Streaming could not be started' or 'Live View unavailable' when requesting WHEP session",
+        "POST /v1/devices/{device_id}/media/streaming/whep/sessions endpoint responds with 400 Bad Request or 409 Conflict",
+        "Screen remains black with infinite loading indicator in third-party API integrations",
+        "Camera has End-to-End Encryption (E2EE) enabled and API rejects stream request"
+      ],
+      "official_signals": [
+        {
+          "metric": "e2e_encryption_enabled",
+          "operator": "eq",
+          "value": true,
+          "interpretation": "Device has active E2EE: video stream via Ring Partner API cannot be decrypted on cloud servers or via API without client device private key.",
+          "diagnostic_weight": 1.0
+        },
+        {
+          "metric": "webrtc_rtt_ms",
+          "operator": "gt",
+          "value": 800,
+          "interpretation": "Excessive latency in WebRTC SDP handshake: timeout negotiating data channel and STUN/TURN packets.",
+          "diagnostic_weight": 0.8
+        }
+      ],
+      "official_facts": [
+        "Ring utilizes the WHEP (WebRTC HTTP Egress Protocol) standard for low-latency live video streaming via https://api.amazonvision.com.",
+        "WHEP sessions require an SDP offer sent with Content-Type: application/sdp and Bearer OAuth authorization.",
+        "End-to-End Encryption (E2EE) on Ring devices encrypts video at the edge using customer-managed keys; cloud WHEP endpoints cannot proxy unencrypted streams when E2EE is active.",
+        "Only one active WHEP streaming session is permitted per camera simultaneously; concurrent requests yield 409 Conflict.",
+        "SDP offer must include DTLS-SRTP fingerprints and ICE candidate trickling support.",
+        "Session expiration occurs after 10 minutes of continuous playback unless ICE keepalive pings are maintained.",
+        "Multi-camera Ring hubs require specifying the component_id parameter in the WHEP URL."
+      ],
+      "official_api_mapping": [
+        {
+          "source": "Ring Partner API",
+          "endpoint": "POST /v1/devices/{device_id}/media/streaming/whep/sessions",
+          "relevant_data": [
+            "SDP offer/answer",
+            "component_id",
+            "Location header session URL"
+          ]
+        },
+        {
+          "source": "Ring Partner API",
+          "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "relevant_data": [
+            "attributes.e2e_encryption.enabled"
+          ]
+        }
+      ],
+      "recommended_actions": [
+        "Check if End-to-End Encryption (E2EE) is enabled in the Ring App; third-party APIs cannot access live streams without client-side key decryption.",
+        "For multi-camera devices or Ring Elite, ensure 'component_id' query parameter is specified in the WHEP URL.",
+        "Confirm no other client or Ring App session is actively streaming from the camera to avoid 409 Conflict.",
+        "Verify Ring Partner OAuth 2.0 access token has ring:device:streaming:read scope and is not expired.",
+        "Check local firewall allows outbound UDP traffic on WebRTC ports (10000-20000) and ICE STUN/TURN binding.",
+        "Retry session creation with refreshed SDP offer after closing orphan WHEP sessions."
+      ],
+      "retrieval_keywords": [
+        "whep",
+        "webrtc",
+        "streaming error",
+        "e2ee",
+        "end to end encryption",
+        "sdp offer",
+        "live view unavailable",
+        "409 conflict",
+        "component_id",
+        "dtls srtp",
+        "amazonvision",
+        "streaming session"
+      ],
+      "official_sources": [
+        "Streaming Live Video with WHEP - Ring Partner API Documentation",
+        "Ring Developer Experience: Live Streaming Architecture",
+        "Ring Partner API Security and End-to-End Encryption Specifications"
+      ]
+    }
+  ],
+  "total_issues": 15
+}
