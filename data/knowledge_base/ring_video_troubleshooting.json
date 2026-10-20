@@ -757,7 +757,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "motion zones",
             "privacy zones",
@@ -767,7 +767,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/history/devices/{device_id}/events",
-          "verification": "unverified: a queryable motion-event endpoint is not confirmed by the documentation reviewed by this project and is not implemented; do not treat motion events as available from the Ring Partner API",
+          "verification": "unverified path: Ring's API release notes document an Event History API for historical device events, but this exact path and whether it returns motion events are not confirmed by this project, and it is not implemented here; do not treat motion events as available through this project",
           "relevant_data": [
             "motion events",
             "device activity"
@@ -1009,7 +1009,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.chime_type",
             "configurations.chime_duration_ms"
@@ -1082,7 +1082,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.video_frequency",
             "configurations.anti_flicker_mode"
@@ -1146,7 +1146,7 @@
         }
       ],
       "official_facts": [
-        "Live video is described as using the WHEP (WebRTC HTTP Egress Protocol) standard for low-latency streaming (unverified by this project; WHEP is not implemented here).",
+        "Ring's API release notes document live video streaming using the WHEP (WebRTC HTTP Egress Protocol) standard and RTSP; the session details in this article are unverified by this project, and WHEP is not implemented here.",
         "WHEP sessions require an SDP offer sent with Content-Type: application/sdp and Bearer OAuth authorization.",
         "End-to-End Encryption (E2EE) on Ring devices encrypts video at the edge using customer-managed keys; cloud WHEP endpoints cannot proxy unencrypted streams when E2EE is active.",
         "Only one active WHEP streaming session is permitted per camera simultaneously; concurrent requests yield 409 Conflict.",
@@ -1158,7 +1158,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "POST /v1/devices/{device_id}/media/streaming/whep/sessions",
-          "verification": "unverified: not confirmed by the documentation reviewed by this project and not implemented; the Digital Twin WHEP answer is simulated",
+          "verification": "unverified path: Ring's API release notes document live video over WebRTC/WHEP (and RTSP), but this exact path and the session details are not confirmed by this project; WHEP is not implemented here and the Digital Twin WHEP answer is simulated",
           "relevant_data": [
             "SDP offer/answer",
             "component_id",
@@ -1168,7 +1168,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "attributes.e2e_encryption.enabled"
           ]

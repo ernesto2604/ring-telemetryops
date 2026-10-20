@@ -11,9 +11,9 @@
 ---
 
 ### Entry 2: Bedrock Multimodal Latency with High-Resolution Video Frames
-- **Specific task attempted:** Send 1080p doorbell snapshot frames alongside JSON telemetry to Amazon Bedrock (Anthropic Claude 3.5 Sonnet / Claude 3 Sonnet) for visual failure analysis.
-- **Steps taken:** Converted raw raw PNG video frames directly to Base64 and sent them via `boto3` `invoke_model`.
-- **Expected vs. actual result:** Expected sub-second response times. Actual payload caused 3.8s–5.2s round-trip latency, too slow for interactive triage.
+- **Specific task attempted:** Send 1080p doorbell keyframes alongside JSON telemetry to Amazon Bedrock (Anthropic `claude-haiku-4-5`, model ID `us.anthropic.claude-haiku-4-5-20251001-v1:0`) for visual failure analysis.
+- **Steps taken:** Encoded full-resolution video frames directly to Base64 and sent them via `boto3` `invoke_model`.
+- **Expected vs. actual result:** Expected interactive response times. The full-resolution image payload made each round trip too slow for interactive triage.
 - **Severity rating:** Major
-- **Workaround used:** Implemented in-memory dynamic frame preprocessing in `src/video_pipeline/analyzer.py` using OpenCV to downscale frames to 1280px width and compress to JPEG at 80% quality, reducing latency to ~1.1s.
+- **Workaround used:** `VideoAnalyzer.get_frame_base64()` in `src/video_pipeline/analyzer.py` now downscales each keyframe in memory with OpenCV to 720 px wide and encodes it as JPEG at quality 75 before `SupportConcierge` sends it to Bedrock. Bedrock is also called only when the local pre-check finds an anomaly.
 - **Actionable suggestion:** Provide native AWS SDK frame-buffer helpers or edge-optimized image preprocessors tailored for smart camera event triage.

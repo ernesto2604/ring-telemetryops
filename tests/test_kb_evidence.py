@@ -89,3 +89,23 @@ def test_whep_symptom_and_fact_state_that_whep_is_unverified():
     assert not any("/v1/" in s for s in article["symptoms"])
     whep_fact = next(f for f in article["official_facts"] if "WHEP (WebRTC HTTP Egress Protocol)" in f)
     assert "unverified" in whep_fact and "not implemented" in whep_fact
+
+
+# Ring's release notes document these APIs; the KB says so without claiming the exact paths.
+@pytest.mark.parametrize("article_id, endpoint_part, api", [
+    ("KB-RING-010", "/events", "Event History API"),
+    ("KB-RING-010", "/configurations", "Device Configuration API"),
+    ("KB-RING-015", "/whep/", "WHEP"),
+])
+def test_documented_ring_apis_are_acknowledged_but_paths_stay_unverified(article_id, endpoint_part, api):
+    note = mapping(article_id, endpoint_part)["verification"]
+    assert note.startswith("unverified")
+    assert api in note and "release notes" in note
+    assert "not implemented" in note
+
+
+def test_friction_log_entry_2_matches_the_code():
+    log = (ROOT / "FRICTION_LOG.md").read_text(encoding="utf-8")
+    entry = log.split("### Entry 2")[1].split("### Entry")[0]
+    assert "720" in entry and "75" in entry and "claude-haiku-4-5" in entry
+    assert "1280" not in entry and "3.5 Sonnet" not in entry
