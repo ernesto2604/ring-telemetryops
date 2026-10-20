@@ -1,7 +1,7 @@
 # Ring TelemetryOps: Autonomous Concierge Agent & Digital Twin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://python.org)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-brightgreen.svg)](https://python.org)
 [![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Claude-orange.svg)](https://aws.amazon.com/bedrock/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Digital%20Twin-teal.svg)](https://fastapi.tiangolo.com/)
 
@@ -112,18 +112,24 @@ The sharpness check is a local heuristic of this project, not a Ring specificati
 
 ### 1. Clone & Set Up Virtual Environment
 
+Requirements: Python 3.11 or newer (the pinned `numpy` needs it; tested with 3.11 and 3.14) and,
+for the frontend tests only, Node.js 18 or newer.
+
+Windows (PowerShell). The commands call the virtual environment's Python directly, so no
+activation script (and no change to the PowerShell execution policy) is needed:
+```powershell
+git clone https://github.com/ernesto2604/ring-telemetryops.git
+cd ring-telemetryops
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Linux/macOS:
 ```bash
 git clone https://github.com/ernesto2604/ring-telemetryops.git
 cd ring-telemetryops
-
-# Create and activate virtual environment
-python -m venv venv
-# On Windows (PowerShell):
-.\venv\Scripts\Activate.ps1
-# On Linux/macOS:
+python3 -m venv venv
 source venv/bin/activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -191,14 +197,14 @@ Remove-Item Env:AWS_ACCESS_KEY_ID, Env:AWS_SECRET_ACCESS_KEY, Env:AWS_SESSION_TO
 $env:AWS_SHARED_CREDENTIALS_FILE = "NUL"
 $env:AWS_CONFIG_FILE = "NUL"
 $env:AWS_EC2_METADATA_DISABLED = "true"
-.env\Scripts\python.exe -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000
+.\venv\Scripts\python.exe -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000
 ```
 
 **Simulator with Bedrock** (AWS credentials in `.env` or the AWS credential chain; each diagnosis
 of an anomaly is a billed Bedrock request):
 ```powershell
 $env:RING_DATA_SOURCE = "simulator"
-.env\Scripts\python.exe -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000
+.\venv\Scripts\python.exe -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000
 ```
 
 Open your browser at **`http://localhost:8000`**. From the web interface you can:
@@ -214,23 +220,24 @@ answer) are labelled as simulated.
 
 ### Option B: Run Headless CLI Diagnostic Agent
 
-Execute the standalone command-line pipeline against any video stream and predefined telemetry scenario:
+Execute the standalone command-line pipeline against any video stream and predefined telemetry
+scenario (simulated telemetry; with AWS credentials configured, anomalies are sent to Bedrock):
 
-```bash
+```powershell
 # 1. Healthy baseline stream
-python -m src.agent.concierge --video data/samples/good_internet.mp4 --scenario nominal
+.\venv\Scripts\python.exe -m src.agent.concierge --video data/samples/good_internet.mp4 --scenario nominal
 
 # 2. Wi-Fi degradation scenario
-python -m src.agent.concierge --video data/samples/bad_internet.mp4 --scenario wifi_degradation
-
+.\venv\Scripts\python.exe -m src.agent.concierge --video data/samples/bad_internet.mp4 --scenario wifi_degradation
 ```
+On Linux/macOS, with the virtual environment activated, use `python` instead of `.\venv\Scripts\python.exe`.
 
 ### Option C: Run Tests
 
 Run the automated test suite from the repository root:
 
 ```powershell
-.env\Scripts\python.exe -m pytest -q -p no:cacheprovider
+.\venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 node --test tests/frontend/ui.test.mjs
 ```
 
@@ -265,8 +272,8 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
   Without a server (same environment variables as the offline demo to avoid Bedrock):
 
   ```powershell
-  .env\Scripts\python.exe -m src.agent.concierge --video data/samples/good_internet.mp4 --scenario in_home_chime
-  .env\Scripts\python.exe -m pytest -q -p no:cacheprovider tests/test_in_home_chime.py
+  .\venv\Scripts\python.exe -m src.agent.concierge --video data/samples/good_internet.mp4 --scenario in_home_chime
+  .\venv\Scripts\python.exe -m pytest -q -p no:cacheprovider tests/test_in_home_chime.py
   ```
 
   Expected: `DEGRADED` / `HARDWARE_POWER` at 13.5 V (simulated telemetry with

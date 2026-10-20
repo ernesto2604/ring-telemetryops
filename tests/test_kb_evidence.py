@@ -109,3 +109,12 @@ def test_friction_log_entry_2_matches_the_code():
     entry = log.split("### Entry 2")[1].split("### Entry")[0]
     assert "720" in entry and "75" in entry and "claude-haiku-4-5" in entry
     assert "1280" not in entry and "3.5 Sonnet" not in entry
+
+
+def test_readme_commands_are_copyable():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", readme), "control characters in README"
+    for command in (r".\venv\Scripts\python.exe -m pip install -r requirements.txt",
+                    r".\venv\Scripts\python.exe -m uvicorn src.api.server:app --host 127.0.0.1 --port 8000",
+                    r".\venv\Scripts\python.exe -m pytest -q -p no:cacheprovider"):
+        assert command in readme, command

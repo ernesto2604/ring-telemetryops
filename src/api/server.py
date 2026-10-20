@@ -416,23 +416,16 @@ async def get_kb_articles():
 @app.get("/api/samples")
 async def get_samples():
     """Lists available sample video streams and uploads."""
-    samples = []
-    for ext in ["*.mp4", "*.MP4", "*.mov"]:
-        for f in SAMPLES_DIR.glob(ext):
-            samples.append({
-                "name": f.name,
-                "path": f"data/samples/{f.name}",
-                "size_kb": round(f.stat().st_size / 1024, 1),
-            })
-    uploads = []
-    for ext in ["*.mp4", "*.MP4", "*.mov"]:
-        for f in UPLOADS_DIR.glob(ext):
-            uploads.append({
-                "name": f.name,
-                "path": f"data/uploads/{f.name}",
-                "size_kb": round(f.stat().st_size / 1024, 1),
-            })
-    return {"samples": samples, "uploads": uploads}
+    def videos(directory: Path, prefix: str) -> list:
+        # One pass with a case-insensitive suffix check: separate "*.mp4" / "*.MP4" globs list
+        # each file twice on case-insensitive filesystems (Windows, macOS).
+        return [
+            {"name": f.name, "path": f"{prefix}/{f.name}", "size_kb": round(f.stat().st_size / 1024, 1)}
+            for f in sorted(directory.iterdir())
+            if f.is_file() and f.suffix.lower() in (".mp4", ".mov")
+        ]
+
+    return {"samples": videos(SAMPLES_DIR, "data/samples"), "uploads": videos(UPLOADS_DIR, "data/uploads")}
 
 
 @app.get("/api/ring/status")

@@ -442,3 +442,8 @@ def test_oversized_frame_is_rejected_before_analysis(monkeypatch):
     )
 
     assert response.status_code == 422
+
+
+def test_samples_are_listed_once_even_on_case_insensitive_filesystems():
+    names = [sample["name"] for sample in client.get("/api/samples").json()["samples"]]
+    assert len(names) == len(set(names))
