@@ -5,9 +5,24 @@
  */
 
 const state = {
-  provider:     'bedrock',
   selectedVideo: null,
   telemetry:    null,
+  ringMode:     'UNKNOWN', // 'MOCK' | 'LIVE' | 'ERROR' once /api/ring/status answers
+  ringSource:   'simulator', // 'simulator' | 'partner' (from /api/ring/status)
+  lastTelemetryError: null,
+
+  // Partner monitoring (status polling). Thresholds come from the server config and are
+  // prototype design choices, not Ring parameters.
+  pollIntervalSeconds: 15,
+  offlineAlertReads:   3,
+  offlineStreak:       0,     // consecutive successful reads with online === false
+  offlineAlertActive:  false,
+  partnerApiError:     null,  // last failed status read {status, message}; separate from device state
+  pollPausedUntil:     0,     // epoch ms; set from Retry-After or the 429 backoff
+  rateLimitStreak:     0,     // consecutive 429s without Retry-After (backoff exponent)
+  offlineAlertMaxGapSeconds: 60,
+  lastEvidenceAt:      0,     // epoch ms of the last read with online true/false
+  liveWebrtcStats: null,
 
   // Parametric sliders
   powerMode:   'wired', // 'wired' | 'battery'
@@ -33,7 +48,10 @@ const state = {
   heartbeatRemaining: 15,
   anomalyConsecutiveCount: 0,
   lastAnomalyDomain: null, // 'HARDWARE_POWER' | 'NETWORK'
+  lastAnomalyReason: null, // a new reason (even in the same domain) restarts the count
   lastDiagnosedAnomalySignature: null,
+  heartbeatAlertActive: false, // the shown alert/report came from the heartbeat and is unresolved
+  heartbeatIncident: 0,        // bumped when an incident ends (recovery, Reset): late answers are stale
 };
 
 // ------------------------------------------------------------------
@@ -43,26 +61,112 @@ window.addEventListener('DOMContentLoaded', async () => {
   await checkServer();
   initCanvasEngine();
   await refreshTelemetry();
+  updateDeviceLiveBadges();   // replaces the neutral HTML placeholders
   startHeartbeatEngine();
 });
 
+const RING_MODES = ['MOCK', 'LIVE', 'ERROR'];
+const RING_SOURCES = ['simulator', 'partner'];
+
+/** The data source could not be determined: explicit error, never a fallback to the simulator. */
+function enterUnknownSourceError(reason) {
+  state.ringMode = 'ERROR';
+  disableTwinControls();
+  document.getElementById('server-dot').style.background = 'var(--ring-red)';
+  document.getElementById('server-status').textContent = `Data source unknown: ${reason}`;
+}
+
 async function checkServer() {
+  // The mode comes from /api/ring/status alone (/api/scenarios has no consumer in the UI).
+  let status;
   try {
-    const r = await fetch('/api/scenarios');
-    if (r.ok) {
-      document.getElementById('server-dot').style.background = 'var(--ring-green)';
-      document.getElementById('server-status').textContent = 'Server online';
+    const statusResponse = await fetch('/api/ring/status');
+    if (!statusResponse.ok) {
+      enterUnknownSourceError(`server returned HTTP ${statusResponse.status}`);
+      return;
     }
+    status = await statusResponse.json();
   } catch {
+    enterUnknownSourceError('server unreachable');
+    return;
+  }
+  if (!status || !RING_MODES.includes(status.mode) || !RING_SOURCES.includes(status.source)) {
+    enterUnknownSourceError('unrecognized status response');
+    return;
+  }
+  state.ringMode = status.mode;
+  state.ringSource = status.source;
+  if (status.monitoring) {
+    state.pollIntervalSeconds = status.monitoring.poll_interval_seconds || state.pollIntervalSeconds;
+    state.offlineAlertReads = status.monitoring.offline_alert_consecutive_reads || state.offlineAlertReads;
+    state.offlineAlertMaxGapSeconds =
+      status.monitoring.offline_alert_max_gap_seconds || state.offlineAlertMaxGapSeconds;
+  }
+  document.getElementById('server-dot').style.background = 'var(--ring-green)';
+  const statusEl = document.getElementById('server-status');
+  if (state.ringSource === 'partner') applyPartnerModeUI();
+  else if (state.ringMode !== 'MOCK') disableTwinControls();   // no data source: Twin values are not data
+  if (state.ringMode === 'LIVE' && state.ringSource === 'partner') {
+    statusEl.textContent = 'Ring Partner API connected';
+  } else if (state.ringMode === 'LIVE') {
+    statusEl.textContent = 'Ring LIVE connected';
+  } else if (state.ringMode === 'ERROR') {
+    statusEl.textContent = 'Ring credentials error';
     document.getElementById('server-dot').style.background = 'var(--ring-red)';
-    document.getElementById('server-status').textContent = 'Offline';
+  } else {
+    statusEl.textContent = 'Digital Twin active';
   }
 }
 
-function selectProvider(p) {
-  state.provider = p;
-  document.getElementById('prov-groq')?.classList.toggle('active', p === 'groq');
-  document.getElementById('prov-bedrock')?.classList.toggle('active', p === 'bedrock');
+/**
+ * Automatic diagnoses read the Digital Twin sliders, so they only run where those
+ * sliders are the data source. Partner mode has no reliable trigger signal yet, and
+ * ERROR mode has no data: both use the explicit "Analyze now" button instead.
+ */
+function autoDiagnosisEnabled() {
+  // Only an explicitly reported simulator (MOCK) makes the sliders a data source.
+  return state.ringSource !== 'partner' && state.ringMode === 'MOCK';
+}
+
+/**
+ * Outside the Digital Twin the simulator controls, their simulated values and the Twin identity
+ * are disabled and hidden, so nothing simulated is shown next to (or instead of) real data.
+ */
+function disableTwinControls() {
+  document.querySelectorAll(
+    'input[type="range"], .hw-tool-btn, #btn-pwr-wired, #btn-pwr-battery, .btn-reset-telemetry, '
+    + '.cam-trigger-btn, #ring-bell-btn'
+  ).forEach(el => { el.disabled = true; });
+  ['twin-status-tag', 'badge-fw', 'twin-identity-fields', 'twin-power-selector', 'twin-sliders', 'twin-hw-controls']
+    .forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+  ['btn-pwr-wired', 'btn-pwr-battery'].forEach(id => document.getElementById(id)?.classList.remove('active'));
+}
+
+/**
+ * Partner mode: Digital Twin controls cannot change official data, so they are disabled
+ * and the explicit analysis button replaces autonomous triggers.
+ */
+function applyPartnerModeUI() {
+  disableTwinControls();
+  const onlineBadge = document.getElementById('badge-online');
+  if (onlineBadge) onlineBadge.style.display = '';
+  const analyzeBtn = document.getElementById('btn-analyze-now');
+  if (analyzeBtn) analyzeBtn.style.display = '';
+  const modeLabel = document.getElementById('autonomous-mode-label');
+  if (modeLabel) modeLabel.textContent = '● Manual analysis (Ring Partner API)';
+  const sourceLabel = document.getElementById('telemetry-source-label');
+  if (sourceLabel) sourceLabel.textContent = 'Ring Partner API (device status only)';
+  const monitorLabel = document.getElementById('monitor-source-label');
+  if (monitorLabel) monitorLabel.textContent = 'No Ring video: Partner image/stream retrieval not integrated';
+  const powerPill = document.getElementById('power-mode-status-pill');
+  if (powerPill) powerPill.textContent = 'Power setup N/D (not reported by Ring)';
+  const engineDesc = document.getElementById('engine-mode-desc');
+  if (engineDesc) {
+    engineDesc.textContent = 'Ring Partner API mode: run a diagnosis with "Analyze now". The server fetches official telemetry.';
+  }
 }
 
 /**
@@ -126,10 +230,13 @@ function setPowerMode(mode) {
   if (!getHeartbeatAnomaly()) {
     state.anomalyConsecutiveCount = 0;
     state.lastAnomalyDomain = null;
+    state.lastAnomalyReason = null;
+    state.lastDiagnosedAnomalySignature = null;
+    state.heartbeatIncident++;
     updateHeartbeatUI();
   }
 
-  showToast(isWired ? '⚡ Hardwired Installation: Continuous transformer active (16-24V)' : '🔋 Battery-Only Installation: Transformer not applicable', 'info');
+  showToast(isWired ? '⚡ Hardwired Installation: Continuous transformer active (required voltage depends on the device model)' : '🔋 Battery-Only Installation: Transformer not applicable', 'info');
 }
 
 // ------------------------------------------------------------------
@@ -137,16 +244,21 @@ function setPowerMode(mode) {
 // ------------------------------------------------------------------
 let heartbeatInterval = null;
 
+/** Seconds between pulses: the configured Partner poll interval, or the simulator's 15 s. */
+function heartbeatPeriod() {
+  return state.ringSource === 'partner' ? state.pollIntervalSeconds : 15;
+}
+
 function startHeartbeatEngine() {
   if (heartbeatInterval) clearInterval(heartbeatInterval);
 
-  state.heartbeatRemaining = 15;
+  state.heartbeatRemaining = heartbeatPeriod();
   updateHeartbeatUI();
 
   heartbeatInterval = setInterval(() => {
     state.heartbeatRemaining--;
     if (state.heartbeatRemaining <= 0) {
-      state.heartbeatRemaining = 15;
+      state.heartbeatRemaining = heartbeatPeriod();
       onHeartbeatPulse();
     }
     updateHeartbeatUI();
@@ -158,7 +270,14 @@ function updateHeartbeatUI() {
   const countEl = document.getElementById('hb-persistency');
   if (timerEl) timerEl.textContent = `${state.heartbeatRemaining}s`;
 
-  if (countEl) {
+  if (countEl && state.ringSource === 'partner') {
+    countEl.textContent = state.offlineAlertActive
+      ? `Offline confirmed (${state.offlineStreak} reads)`
+      : `Offline ${state.offlineStreak}/${state.offlineAlertReads} reads`;
+    countEl.className = 'persistency-badge ' + (
+      state.offlineAlertActive ? 'crit' : state.offlineStreak > 0 ? 'warn' : 'ok'
+    );
+  } else if (countEl) {
     const domainTag = state.lastAnomalyDomain ? ` [${state.lastAnomalyDomain === 'HARDWARE_POWER' ? 'Power' : 'Wi-Fi'}]` : '';
     countEl.textContent = `${state.anomalyConsecutiveCount}/3 heartbeats${domainTag}`;
     countEl.className = 'persistency-badge ' + (
@@ -172,19 +291,19 @@ function updateHeartbeatUI() {
  * Evaluates reportable anomalies in background standby heartbeats.
  * Accurately differentiates between hardwired and battery-only installations:
  * - Hardwired: 0V transformer or power cut is a critical hardware fault (HARDWARE_POWER).
- * - Battery-Only: Transformer does not exist; only evaluates battery depletion (≤10%).
+ * - Battery-Only: Transformer does not exist; only evaluates battery depletion (<10%, immediate).
  */
 function getHeartbeatAnomaly() {
   // A. Power Evaluation
   if (state.powerMode === 'wired') {
-    if (state.hardwareFaults.powerCut || state.transformer === 0) {
+    if (state.transformer === 0) {
       return {
         domain: 'HARDWARE_POWER',
         isCriticalImmediate: true,
         reason: 'Power cut / 0V AC transformer on hardwired doorbell',
       };
     }
-    if (state.transformer > 0 && state.transformer < 12.0) {
+    if (state.transformer > 0 && state.transformer < TRANSFORMER_MIN_VAC) {
       return {
         domain: 'HARDWARE_POWER',
         isCriticalImmediate: false,
@@ -193,28 +312,22 @@ function getHeartbeatAnomaly() {
     }
   } else {
     // Battery-Only Installation
-    if (state.battery <= 5) {
+    if (state.battery < BATTERY_CRITICAL_PCT) {
       return {
         domain: 'HARDWARE_POWER',
         isCriticalImmediate: true,
-        reason: 'Rechargeable battery critically depleted (≤5%)',
+        reason: 'Rechargeable battery critically depleted (<10%)',
       };
     }
-    if (state.battery <= 15) {
-      return {
-        domain: 'HARDWARE_POWER',
-        isCriticalImmediate: false,
-        reason: 'Rechargeable battery low (≤15%)',
-      };
-    }
+    // 10 % and above is not an anomaly; the badge's low/critical colours are display only.
   }
 
   // B. Network Evaluation (Wi-Fi or IP link)
-  if (state.rssi < -75 || state.loss > 8 || state.jitter > 40) {
+  if (state.rssi < RSSI_DEGRADED_DBM || state.loss > PACKET_LOSS_DEGRADED_PCT || state.jitter > JITTER_DEGRADED_MS) {
     return {
       domain: 'NETWORK',
       isCriticalImmediate: false,
-      reason: state.rssi < -75 ? 'Weak Wi-Fi signal' : 'Degraded IP link',
+      reason: state.rssi < RSSI_DEGRADED_DBM ? 'Weak Wi-Fi signal' : 'Degraded IP link',
     };
   }
 
@@ -222,10 +335,72 @@ function getHeartbeatAnomaly() {
 }
 
 /**
- * Executes official background diagnostic heartbeat every 15 seconds
+ * Executes the background diagnostic heartbeat every 15 seconds
  */
-async function onHeartbeatPulse() {
+/**
+ * Persistent-offline alert (prototype design choice; thresholds come from the server:
+ * RING_PARTNER_OFFLINE_ALERT_READS and RING_PARTNER_OFFLINE_ALERT_MAX_GAP_SECONDS).
+ *
+ * "Evidence" is a successful status read where Ring reports online as true or false.
+ * The alert is confirmed when the last N evidence reads all reported online === false
+ * AND no two successive evidence reads are more than MAX_GAP apart. So:
+ *  - online === false                     -> streak + 1 (after the gap check below)
+ *  - online === true                      -> streak and alert reset
+ *  - online null or API error             -> no evidence: streak unchanged, gap clock keeps running
+ *  - evidence after a gap > MAX_GAP       -> streak and alert reset first (old reads are stale)
+ * The alert is separate from the Ring-reported state shown on the online badge.
+ */
+function applyOfflineAlertPolicy(online, nowMs) {
+  if (online !== true && online !== false) return;
+  const gapMs = state.offlineAlertMaxGapSeconds * 1000;
+  if (state.lastEvidenceAt && nowMs - state.lastEvidenceAt > gapMs) {
+    state.offlineStreak = 0;
+    state.offlineAlertActive = false;
+  }
+  state.lastEvidenceAt = nowMs;
+  if (online === true) {
+    state.offlineStreak = 0;
+    state.offlineAlertActive = false;
+    return;
+  }
+  state.offlineStreak++;
+  if (!state.offlineAlertActive && state.offlineStreak >= state.offlineAlertReads) {
+    state.offlineAlertActive = true;
+    showToast(`🔴 Ring reports the device offline in ${state.offlineStreak} consecutive reads`, 'error');
+  }
+}
+
+/**
+ * Partner monitoring pulse: one status refresh (skipped while a Retry-After / 429 backoff
+ * pause is active), then the offline alert policy. It never calls the diagnostic agent;
+ * analysis stays on "Analyze now".
+ */
+async function pollPartnerStatus() {
+  if (Date.now() < state.pollPausedUntil) {
+    updateHeartbeatUI();
+    return;
+  }
   await refreshTelemetry();
+  const online = state.telemetry && state.telemetry.device_health
+    ? state.telemetry.device_health.online : undefined;
+  applyOfflineAlertPolicy(online, Date.now());
+  updateHeartbeatUI();
+}
+
+async function onHeartbeatPulse() {
+  if (state.ringSource === 'partner') {
+    await pollPartnerStatus();
+    return;
+  }
+  await refreshTelemetry();
+
+  if (!autoDiagnosisEnabled()) {
+    state.anomalyConsecutiveCount = 0;
+    state.lastAnomalyDomain = null;
+    state.lastAnomalyReason = null;
+    updateHeartbeatUI();
+    return;
+  }
 
   const anomaly = getHeartbeatAnomaly();
 
@@ -234,21 +409,25 @@ async function onHeartbeatPulse() {
     if (anomaly.isCriticalImmediate) {
       state.anomalyConsecutiveCount = 3;
       state.lastAnomalyDomain = anomaly.domain;
+      state.lastAnomalyReason = anomaly.reason;
       updateHeartbeatUI();
       console.log(`[Heartbeat] CRITICAL power incident on 1st pulse! (${anomaly.reason})`);
       triggerAutonomousDiagnosis('background_immediate_power', 'power_cut');
       return;
     }
 
-    // Persistence rule by domain:
-    // If anomaly domain changes (e.g. NETWORK to HARDWARE_POWER), reset counter to 1
-    if (state.lastAnomalyDomain && state.lastAnomalyDomain !== anomaly.domain) {
-      console.log(`[Heartbeat] Anomaly domain changed from ${state.lastAnomalyDomain} to ${anomaly.domain}. Resetting counter to 1.`);
+    // Persistence rule by reason: a new reason (also within the same domain, e.g. critical ->
+    // low battery) is a new anomaly and starts again at 1. The count stops at 3.
+    if (state.lastAnomalyReason !== anomaly.reason) {
+      if (state.lastAnomalyReason) {
+        console.log(`[Heartbeat] Anomaly changed from "${state.lastAnomalyReason}" to "${anomaly.reason}". Resetting counter to 1.`);
+      }
       state.anomalyConsecutiveCount = 1;
     } else {
-      state.anomalyConsecutiveCount++;
+      state.anomalyConsecutiveCount = Math.min(3, state.anomalyConsecutiveCount + 1);
     }
     state.lastAnomalyDomain = anomaly.domain;
+    state.lastAnomalyReason = anomaly.reason;
 
     console.log(`[Heartbeat] Sustained anomaly [${anomaly.domain}]: ${state.anomalyConsecutiveCount}/3 heartbeats.`);
 
@@ -263,6 +442,12 @@ async function onHeartbeatPulse() {
     }
     state.anomalyConsecutiveCount = 0;
     state.lastAnomalyDomain = null;
+    state.lastAnomalyReason = null;
+    // The incident is over: a later anomaly is new even with identical values, whether or not
+    // this one was rendered (skipped analysis, or replaced by an event-session report).
+    state.lastDiagnosedAnomalySignature = null;
+    state.heartbeatIncident++;
+    if (state.heartbeatAlertActive) resolveHeartbeatAlert();
   }
 
   updateHeartbeatUI();
@@ -273,17 +458,12 @@ async function onHeartbeatPulse() {
  * evaluating active camera feed and streaming telemetry in real-time.
  */
 function checkEventSessionDiagnostics(reason) {
-  const hw = state.hardwareFaults || {};
-  const isOpticalFault = hw.dirtyLens || hw.pinkFilter || hw.flicker;
-  const isPowerFault   = hw.powerCut || state.transformer === 0 || state.battery <= 10;
-  const isNetworkFault = state.rssi < -75 || state.loss > 8 || state.jitter > 40 || state.fps < 15 || state.bitrate < 300;
-
-  if (isOpticalFault || isPowerFault || isNetworkFault) {
-    // User experiencing degraded session in real-time: trigger autonomous diagnosis
-    setTimeout(() => {
-      triggerAutonomousDiagnosis('event_session', reason);
-    }, 1200);
-  }
+  if (!autoDiagnosisEnabled()) return;
+  // Let the backend pre-check telemetry and the captured frame. Bedrock is
+  // only invoked if that pre-check finds an anomaly.
+  setTimeout(() => {
+    triggerAutonomousDiagnosis('event_session', reason);
+  }, 1200);
 }
 
 // ------------------------------------------------------------------
@@ -293,9 +473,11 @@ let isAnalyzing = false;
 
 async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
   if (isAnalyzing) return;
+  // Without a reported data source there is nothing to diagnose: never send Twin data as a fallback.
+  if (state.ringSource !== 'partner' && state.ringMode !== 'MOCK') return;
 
   // Signature check to avoid repeating identical diagnoses in loop
-  const currentSignature = `${state.rssi}_${state.battery}_${state.transformer}_${state.loss}_${JSON.stringify(state.hardwareFaults)}`;
+  const currentSignature = `${state.rssi}_${state.battery}_${state.transformer}_${state.loss}`;
   if (state.lastDiagnosedAnomalySignature === currentSignature && (triggerOrigin === 'background_persistent' || triggerOrigin === 'background_immediate_power')) {
     return;
   }
@@ -303,11 +485,13 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
 
   isAnalyzing = true;
   showAnalyzingIndicator(true);
+  const incident = state.heartbeatIncident;
 
-  // Capture canvas frame ONLY if camera is active
+  const partner = state.ringSource === 'partner';
+  // Capture canvas frame ONLY if camera is active (never in Partner mode: the canvas is simulated)
   let canvasFrameBase64 = null;
   const isCamActive = !!(typeof cx !== 'undefined' && cx.cameraActive);
-  if (isCamActive) {
+  if (isCamActive && state.ringMode !== 'LIVE' && !partner) {
     const canvas = document.getElementById('video-canvas');
     if (canvas && canvas.width > 0 && canvas.height > 0) {
       try {
@@ -320,35 +504,94 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
   }
 
   try {
+    // Partner: the server fetches official telemetry itself; no browser metrics are sent.
+    const body = partner ? {
+      source_mode:      'ring',
+      device_id:        (state.telemetry && state.telemetry.device_id) || null,
+      camera_active:    false,
+      telemetry:        null,
+      frame_base64:     null,
+    } : {
+      frame_base64:     canvasFrameBase64,
+      video_path:       state.selectedVideo ? state.selectedVideo.path : 'data/samples/good_internet.mp4',
+      telemetry:        mergeLiveTelemetry(state.telemetry || {}),
+      keyframe_second:  1.0,
+      camera_active:    isCamActive,
+      source_mode:      state.ringMode === 'MOCK' ? 'twin' : 'ring',
+    };
     const r = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        frame_base64:     canvasFrameBase64,
-        video_path:       state.selectedVideo ? state.selectedVideo.path : 'data/samples/good_internet.mp4',
-        telemetry:        state.telemetry || {},
-        provider:         state.provider,
-        keyframe_second:  1.0,
-        camera_active:    isCamActive,
-      }),
+      body: JSON.stringify(body),
     });
 
-    if (r.ok) {
-      const data = await r.json();
-      const diag = data.diagnostic_result;
-
-      // Render full official report
-      renderResult(diag);
-
-      // Trigger Smart Ring App Push Notification
-      showAppPushNotification(diag, triggerOrigin, extraContext);
+    if (!r.ok) {
+      // A failed request is reported as a failure, never as a diagnosis.
+      state.lastDiagnosedAnomalySignature = null;
+      showToast(`❌ Diagnosis failed: ${await responseErrorMessage(r)}`, 'error');
+      return;
     }
+
+    const data = await r.json();
+    if (data.analysis_skipped) {
+      const noVideo = data.video_analysis && data.video_analysis.available === false;
+      showToast(noVideo
+        ? '✅ No anomaly in measured telemetry (no video frame analyzed); Bedrock analysis skipped'
+        : '✅ Telemetry and video metrics nominal; Bedrock analysis skipped', 'info');
+      return;
+    }
+
+    // A heartbeat analysis that answers after its incident ended (recovery or Reset) is stale:
+    // showing it would bring back a resolved alert. Event and manual analyses are not affected.
+    if (triggerOrigin.startsWith('background_') && incident !== state.heartbeatIncident) {
+      console.log('[Heartbeat] Discarding a late analysis answer: the incident already ended.');
+      return;
+    }
+
+    const diag = data.diagnostic_result;
+
+    // Render the full diagnostic report
+    renderResult(diag);
+    showReportProvider(data._provider);
+
+    // Trigger Smart Ring App Push Notification
+    showAppPushNotification(diag, triggerOrigin, extraContext);
+
+    // A new report is current, not resolved. Only heartbeat alerts are resolved by a nominal pulse.
+    setResolvedNote(false);
+    state.heartbeatAlertActive = triggerOrigin.startsWith('background_');
+
   } catch (err) {
     console.error('Error during autonomous diagnosis:', err);
+    state.lastDiagnosedAnomalySignature = null;
+    showToast(`❌ Diagnosis failed: ${err.message || 'network error'}`, 'error');
   } finally {
     isAnalyzing = false;
     showAnalyzingIndicator(false);
   }
+}
+
+/** Explicit diagnosis from the UI (the only trigger in Partner mode). */
+async function runManualDiagnosis() {
+  const btn = document.getElementById('btn-analyze-now');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing…'; }
+  try {
+    await triggerAutonomousDiagnosis('manual');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🩺 Analyze now'; }
+  }
+}
+
+function mergeLiveTelemetry(telemetry) {
+  if (state.ringMode !== 'LIVE' || !state.liveWebrtcStats) return telemetry;
+  return {
+    ...telemetry,
+    webrtc_stats: state.liveWebrtcStats,
+    measurement_status: {
+      ...(telemetry.measurement_status || {}),
+      webrtc_stats: 'measured',
+    },
+  };
 }
 
 function showAnalyzingIndicator(active) {
@@ -369,9 +612,15 @@ function showAppPushNotification(diag, origin, extraContext) {
 
   const status = diag.diagnostic_status || 'DEGRADED';
   banner.className = 'app-push-banner show ' + (status === 'CRITICAL' ? '' : 'warning');
-  iconEl.textContent = status === 'CRITICAL' ? '🚨' : '⚠️';
+  iconEl.textContent = status === 'CRITICAL' ? '🚨' : status === 'INSUFFICIENT_DATA' ? '❔' : '⚠️';
 
-  if (origin === 'background_immediate_power') {
+  if (status === 'INSUFFICIENT_DATA') {
+    titleEl.textContent = 'Ring: Not enough data to diagnose this device';
+    descEl.textContent = diag.recommended_mitigation || 'Some essential metrics were not measured.';
+  } else if (origin === 'manual') {
+    titleEl.textContent = `Ring diagnosis: ${status}`;
+    descEl.textContent = diag.recommended_mitigation || 'See the diagnostic console for details.';
+  } else if (origin === 'background_immediate_power') {
     if (state.powerMode === 'battery') {
       titleEl.textContent = `Ring Alert: Critical Battery Depleted (≤5%)`;
     } else {
@@ -389,7 +638,14 @@ function showAppPushNotification(diag, origin, extraContext) {
   }
 
   if (metaEl) {
-    metaEl.innerHTML = `<span>Domain: ${diag.root_cause_domain}</span> • <span>AI Confidence: ${Math.round((diag.confidence_score || 0) * 100)}%</span>`;
+    // Model output is untrusted: built as text, never parsed as HTML.
+    metaEl.innerHTML = '';
+    const domainEl = document.createElement('span');
+    domainEl.textContent = `Domain: ${diag.root_cause_domain}`;
+    const confEl = document.createElement('span');
+    confEl.textContent = ` • Confidence: ${Math.round((diag.confidence_score || 0) * 100)}%`;
+    metaEl.appendChild(domainEl);
+    metaEl.appendChild(confEl);
   }
 }
 
@@ -398,12 +654,24 @@ function closePushBanner() {
   if (banner) banner.classList.remove('show');
 }
 
+// Names the engine that produced the shown report: a local fallback must not look like a Bedrock answer.
+function showReportProvider(provider) {
+  const el = document.getElementById('engine-provider');
+  if (!el) return;
+  const labels = {
+    bedrock: '☁️ AWS Bedrock (Claude)',
+    local_fallback: '⚙️ Local fallback (Bedrock unavailable)',
+    precheck: '⚙️ Local pre-check (no Bedrock call)',
+  };
+  el.textContent = labels[provider] || '☁️ AWS Bedrock (Claude)';
+}
+
 function renderResult(diag) {
   const status    = diag.diagnostic_status || 'DEGRADED';
   const domain    = diag.root_cause_domain || 'NONE';
   const confidence= Math.round((diag.confidence_score || 0) * 100);
 
-  const icons = { HEALTHY: '✅', DEGRADED: '⚠️', CRITICAL: '🚨' };
+  const icons = { HEALTHY: '✅', DEGRADED: '⚠️', CRITICAL: '🚨', INSUFFICIENT_DATA: '❔' };
   const labels = {
     NETWORK:                  'Network Issue (Wi-Fi / Upstream)',
     NETWORK_WEBRTC:           'WebRTC Connection / Firewall Error',
@@ -414,6 +682,7 @@ function renderResult(diag) {
     AUDIO_NETWORK:            'Two-Way Audio / Echo / Jitter',
     ALGORITHM_CONFIGURATION:  'Configuration / Mounting Height or PIR Zones',
     NONE:                     'Healthy Device and Stream',
+    UNKNOWN:                  'Undetermined (not enough measured data)',
   };
 
   const bar = document.getElementById('diag-status-bar');
@@ -455,15 +724,36 @@ function renderList(id, items) {
 // ------------------------------------------------------------------
 // Diagnostic Console: Clear
 // ------------------------------------------------------------------
-function clearDiagnosticConsole() {
+function setResolvedNote(resolved) {
+  const note = document.getElementById('diag-resolved-note');
+  if (!note) return;
+  note.style.display = resolved ? '' : 'none';
+  note.textContent = resolved ? '✅ Resolved — telemetry back to nominal' : '';
+}
+
+/** Heartbeat anomaly recovered: the alert ends, the report stays as history marked resolved. */
+function resolveHeartbeatAlert() {
+  document.getElementById('app-push-banner')?.classList.remove('show');
+  setResolvedNote(true);
+  state.heartbeatAlertActive = false;
+  state.lastDiagnosedAnomalySignature = null;   // a later incident is new, even with the same values
+}
+
+/** Removes the active alert and the report (Reset / Clear). */
+function dismissDiagnosis() {
   const resCont = document.getElementById('result-content');
   const emptyRes = document.getElementById('empty-result');
-  const banner = document.getElementById('app-push-banner');
   if (resCont) resCont.style.display = 'none';
   if (emptyRes) emptyRes.style.display = '';
-  if (banner) banner.classList.remove('show');
-
+  document.getElementById('app-push-banner')?.classList.remove('show');
+  setResolvedNote(false);
+  state.heartbeatAlertActive = false;
   state.lastDiagnosedAnomalySignature = null;
+  state.heartbeatIncident++;
+}
+
+function clearDiagnosticConsole() {
+  dismissDiagnosis();
   showToast('🧹 Diagnostic console cleared and ready', 'info');
 }
 
@@ -491,7 +781,7 @@ function toggleLiveView() {
     deactivateCamera();
     showToast('👁️ Live View closed', 'info');
   } else {
-    showToast('👁️ WHEP connection established: Live View opened', 'info');
+    showToast('👁️ Simulated Live View opened (Digital Twin sample video)', 'info');
     activateCamera('live', 0); // manual
   }
 }
@@ -530,10 +820,17 @@ function filterKbArticles(val) {
     return;
   }
   const filtered = kbArticles.filter(a => {
-    const str = (a.title + ' ' + a.root_cause + ' ' + (a.symptoms || []).join(' ') + ' ' + (a.recommended_actions || []).join(' ')).toLowerCase();
+    const str = [a.title, a.issue_type, ...(a.symptoms || []), ...(a.recommended_actions || [])]
+      .filter(Boolean).join(' ').toLowerCase();
     return str.includes(q);
   });
   renderKbModal(filtered);
+}
+
+/** Escapes text for interpolation into an HTML template (KB content is data, not markup). */
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
 function renderKbModal(articles) {
@@ -548,28 +845,30 @@ function renderKbModal(articles) {
   articles.forEach(a => {
     const card = document.createElement('div');
     card.className = 'kb-card';
+    const sources = Array.isArray(a.official_sources) && a.official_sources.length
+      ? a.official_sources.join('; ') : 'No source listed';
     card.innerHTML = `
       <div class="kb-card-header">
-        <div class="kb-card-title">${a.title}</div>
-        <span class="kb-card-id">${a.id}</span>
+        <div class="kb-card-title">${escapeHtml(a.title)}</div>
+        <span class="kb-card-id">${escapeHtml(a.id)}</span>
       </div>
-      <div class="kb-card-source">📖 Official source: <em>${a.official_ring_source || 'Ring Support Center'}</em></div>
-      <div class="kb-card-cause"><strong>Root Cause:</strong> ${a.root_cause}</div>
+      <div class="kb-card-source">📖 Cited sources (article titles, not verified by this app): <em>${escapeHtml(sources)}</em></div>
+      <div class="kb-card-cause"><strong>Issue type:</strong> ${escapeHtml(a.issue_type || 'Not specified')}</div>
       <div style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px;">
         <strong>Detectable symptoms:</strong>
         <ul style="padding-left:16px;margin-top:4px;">
-          ${(a.symptoms || []).map(s => `<li>${s}</li>`).join('')}
+          ${(a.symptoms || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}
         </ul>
       </div>
       <div style="font-size:0.78rem;color:var(--ring-cyan);margin-top:6px;">
-        <strong>Official recommended actions:</strong>
+        <strong>Recommended actions:</strong>
         <ul style="padding-left:16px;margin-top:4px;">
-          ${(a.recommended_actions || []).slice(0, 3).map(act => `<li>${act}</li>`).join('')}
+          ${(a.recommended_actions || []).slice(0, 3).map(act => `<li>${escapeHtml(act)}</li>`).join('')}
         </ul>
       </div>
       <div class="kb-tag-list">
-        <span class="kb-tag">Domain: ${a.root_cause_domain}</span>
-        <span class="kb-tag">Category: ${a.issue_category}</span>
+        <span class="kb-tag">Domain: ${escapeHtml(a.root_cause_domain || 'Not specified')}</span>
+        <span class="kb-tag">Category: ${escapeHtml(a.issue_category || 'Not specified')}</span>
       </div>
     `;
     container.appendChild(card);

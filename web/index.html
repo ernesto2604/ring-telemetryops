@@ -32,7 +32,7 @@
   </div>
   <div style="display:flex;align-items:center;gap:12px;">
     <button class="btn-kb-modal" onclick="openKbModal()">
-      <span>📚</span> Knowledge Base (Official SOPs)
+    <span>📚</span> Ring Troubleshooting Knowledge Base
     </button>
     <div class="header-status">
       <div class="dot" id="server-dot"></div>
@@ -54,8 +54,8 @@
     <!-- 3D Physical Digital Twin Device -->
     <div class="device-visual">
       <div class="twin-top-bar">
-        <div class="twin-status-tag">
-          <span class="pulse-dot"></span> LIVE HARDWARE
+        <div class="twin-status-tag" id="twin-status-tag">
+          <span class="pulse-dot"></span> DIGITAL TWIN (SIMULATED)
         </div>
         <div class="plate-selector" title="Choose faceplate finish">
           <span class="plate-color-dot plate-nickel active" id="dot-nickel" onclick="changePlateColor('nickel')" title="Satin Nickel"></span>
@@ -102,13 +102,16 @@
       <div class="device-name" id="dev-name">Ring Video Doorbell 4</div>
       <div class="device-id" id="dev-id">ID: a1b2c3d4e5f6</div>
       <div class="device-status-badges">
-        <span class="badge badge-green" id="badge-wifi">📶 Wi-Fi OK</span>
-        <span class="badge badge-green" id="badge-battery">🔋 100%</span>
+        <span class="badge" id="badge-wifi">📶 Wi-Fi —</span>
+        <span class="badge" id="badge-battery">🔋 —</span>
+        <span class="badge" id="badge-online" style="display:none;">⚪ Online N/D</span>
+        <span class="badge badge-orange" id="badge-api-error" style="display:none;"></span>
         <span class="badge badge-blue"  id="badge-fw">FW 2.4.18</span>
       </div>
+      <div class="device-id" id="partner-capabilities" style="display:none;"></div>
 
       <!-- Hardware Fault Injection Bar -->
-      <div class="hardware-controls-bar">
+      <div class="hardware-controls-bar" id="twin-hw-controls">
         <div class="hw-title">
           <span>🛠️ Hardware Digital Twin</span>
           <span style="font-size:0.65rem;color:var(--text-muted);text-transform:none">Physical Fault Injection</span>
@@ -134,7 +137,7 @@
 
       <!-- Real-time Ding Notification Banner -->
       <div class="chime-banner" id="chime-banner">
-        <span>🔔</span> <strong>DING! Doorbell Pressed</strong> — Active WHEP/SIP connection
+        <span>🔔</span> <strong>DING! Doorbell Pressed</strong> — simulated session
       </div>
     </div>
 
@@ -149,12 +152,12 @@
           <button class="btn-header-action btn-reset-telemetry" onclick="resetTelemetryDefaults()" title="Reset all telemetry to optimal factory defaults">
             <span>🔄</span> Reset Telemetry
           </button>
-          <span style="font-size:0.68rem;color:var(--ring-cyan);font-weight:600;">Ring Partner API</span>
+          <span id="telemetry-source-label" style="font-size:0.68rem;color:var(--ring-cyan);font-weight:600;">Digital Twin (simulated)</span>
         </div>
       </div>
 
       <!-- Power Mode Selector -->
-      <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 1.1rem;">
+      <div id="twin-power-selector" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 1.1rem;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
           <span style="font-size: 0.68rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Power Installation</span>
           <span id="power-mode-status-pill" style="font-size: 0.65rem; color: var(--ring-cyan); font-weight: 500;">⚡ Continuous Hardwired</span>
@@ -170,7 +173,7 @@
       </div>
 
       <!-- Continuous Parametric Sliders -->
-      <div class="slider-group">
+      <div class="slider-group" id="twin-sliders">
         <div class="slider-item">
           <label>
             <span>Wi-Fi Signal (RSSI)</span>
@@ -244,7 +247,7 @@
         </div>
       </div>
 
-      <div style="margin-top:1rem;">
+      <div id="twin-identity-fields" style="margin-top:1rem;">
         <div class="form-group">
           <label>Device Model</label>
           <input type="text" id="c-model" value="Ring Video Doorbell 4" readonly style="opacity:0.85; cursor:default; background:rgba(255,255,255,0.03);" />
@@ -271,10 +274,10 @@
       <div class="card-title" style="justify-content:space-between;">
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="card-title-icon">🎬</div>
-          Ring Camera Monitor — Official Lifecycle
+          Camera Monitor — Digital Twin
         </div>
         <div style="font-size:0.7rem;color:var(--text-muted);">
-          <span>WHEP / H.264 Stream</span>
+          <span id="monitor-source-label">Simulated stream (sample MP4)</span>
         </div>
       </div>
 
@@ -298,7 +301,7 @@
         <!-- Top HUD Overlay during Call/Stream -->
         <div class="video-hud-overlay">
           <div class="hud-live-indicator" id="hud-live-indicator" style="display:none;">
-            <span class="rec-dot"></span> LIVE • CALL ACTIVE
+            <span class="rec-dot"></span> SIMULATED • CALL ACTIVE
           </div>
           <div class="hud-tag" id="hud-cam-meta">Ring 1080p HDR • 30 FPS</div>
         </div>
@@ -344,40 +347,36 @@
     <div class="metrics-grid" id="metrics-grid">
       <div class="metric-card">
         <div class="metric-label">Wi-Fi RSSI</div>
-        <div class="metric-value metric-normal" id="m-rssi">-48</div>
+        <div class="metric-value metric-normal" id="m-rssi">—</div>
         <div class="metric-unit">dBm</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Battery</div>
-        <div class="metric-value metric-normal" id="m-battery">100</div>
+        <div class="metric-value metric-normal" id="m-battery">—</div>
         <div class="metric-unit">% capacity</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Jitter</div>
-        <div class="metric-value metric-normal" id="m-jitter">2.0</div>
+        <div class="metric-value metric-normal" id="m-jitter">—</div>
         <div class="metric-unit">ms (WebRTC)</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Packet Loss</div>
-        <div class="metric-value metric-normal" id="m-loss">0.0</div>
+        <div class="metric-value metric-normal" id="m-loss">—</div>
         <div class="metric-unit">% packets</div>
       </div>
     </div>
 
-    <!-- Autonomous AI Provider Selector -->
+    <!-- Autonomous AI Reasoning Engine -->
     <div class="card" style="padding:1rem 1.25rem;">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div>
           <div style="font-weight:600;font-size:0.82rem;">Autonomous AI Reasoning Engine</div>
-          <div style="font-size:0.72rem;color:var(--text-muted);">Diagnoses without manual intervention upon detecting sustained anomalies or degraded sessions</div>
+          <div style="font-size:0.72rem;color:var(--text-muted);" id="engine-mode-desc">Diagnoses without manual intervention upon detecting sustained anomalies or degraded sessions</div>
         </div>
         <div class="provider-row">
-          <button class="provider-btn" id="prov-groq" onclick="selectProvider('groq')">
-            ⚡ Groq (Llama-4 Scout)
-          </button>
-          <button class="provider-btn active" id="prov-bedrock" onclick="selectProvider('bedrock')">
-            ☁️ AWS Bedrock (Claude)
-          </button>
+          <button class="provider-btn" id="btn-analyze-now" onclick="runManualDiagnosis()" style="display:none;">🩺 Analyze now</button>
+          <span class="provider-btn active" id="engine-provider">☁️ AWS Bedrock (Claude)</span>
         </div>
       </div>
     </div>
@@ -397,7 +396,7 @@
         <button class="btn-header-action btn-clear-diag" onclick="clearDiagnosticConsole()" title="Clear diagnostic report and alerts">
           <span>🧹</span> Clear Console
         </button>
-        <span style="font-size:0.68rem;color:var(--ring-green);font-weight:600;">● Autonomous Mode Active</span>
+        <span style="font-size:0.68rem;color:var(--ring-green);font-weight:600;" id="autonomous-mode-label">● Autonomous Mode Active</span>
       </div>
     </div>
 
@@ -415,11 +414,12 @@
     <!-- Nominal Standby Empty State -->
     <div class="empty-result" id="empty-result">
       <div class="empty-result-icon">🛡️</div>
-      <div class="empty-result-text">The system operates in nominal silent mode. If a persistent fault occurs (3 sustained heartbeats: 45s) or a degraded session is detected, the official report will appear automatically here.</div>
+      <div class="empty-result-text">The system operates in nominal silent mode. If a persistent fault occurs (3 sustained heartbeats: 45s) or a degraded session is detected, the diagnostic report will appear automatically here.</div>
     </div>
 
-    <!-- Official Report Content -->
+    <!-- Diagnostic Report Content -->
     <div id="result-content" style="display:none;">
+      <div id="diag-resolved-note" style="display:none;"></div>
       <div class="diagnostic-status" id="diag-status-bar">
         <span class="status-icon" id="diag-icon">✅</span>
         <div class="status-text">
@@ -447,7 +447,7 @@
       </div>
 
       <div class="mitigation-box">
-        <h3>💡 Official Recommended Mitigation (Ring Knowledge Base)</h3>
+        <h3>💡 Recommended Mitigation (Ring Troubleshooting Knowledge Base)</h3>
         <p id="mitigation-text"></p>
       </div>
     </div>
@@ -456,11 +456,11 @@
 
 </main>
 
-<!-- Official Ring Knowledge Base (RAG Modal) -->
+<!-- Ring-informed troubleshooting knowledge base modal -->
 <div class="modal-backdrop" id="kb-modal" onclick="if(event.target===this)closeKbModal()">
   <div class="modal-dialog">
     <div class="modal-header">
-      <h2><span>📚</span> Official Ring Knowledge Base (RAG)</h2>
+      <h2><span>📚</span> Ring Troubleshooting Knowledge Base</h2>
       <button class="modal-close" onclick="closeKbModal()">&times;</button>
     </div>
     <div class="modal-body">
@@ -474,10 +474,10 @@
 <div id="toast"></div>
 
 <!-- Modular Scripts in dependency order -->
-<script src="/web/js/chime-audio.js"></script>
-<script src="/web/js/canvas-engine.js"></script>
-<script src="/web/js/telemetry.js"></script>
-<script src="/web/js/app.js"></script>
+<script src="/web/js/chime-audio.js?v=6"></script>
+<script src="/web/js/canvas-engine.js?v=6"></script>
+<script src="/web/js/telemetry.js?v=6"></script>
+<script src="/web/js/app.js?v=6"></script>
 
 </body>
 </html>

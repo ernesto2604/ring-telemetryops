@@ -1,15 +1,16 @@
 """
 TelemetrySimulator — Ring TelemetryOps Concierge Agent
 =======================================================
-Generates simulated telemetry payloads that strictly mirror the production
-schema exposed by Ring, combining two data tiers:
+Generates SIMULATED telemetry for the Digital Twin, in the project's telemetry schema,
+combining two data tiers. None of these values come from a Ring device.
 
-TIER 1 — Ring Partner API / device_health endpoint
-    GET https://api.amazonvision.com/v1/devices/{id}/status
+TIER 1 — Device health (project schema)
     Fields: rssi, battery_percentage, wifi_name, led_status, firmware,
             network_connection_type, wifi_is_connected, latest_signal_strength,
             transformer_voltage_vac, battery_saver_low_voltage
-    Reference: developer.ring.com / Ring Partner API (JSON:API spec)
+    Note: the official Ring Partner API status endpoint (GET /v1/devices/{id}/status) reports
+    `online`, battery percentage and `reported_at`; it does not report RSSI, transformer voltage,
+    LED, firmware or Wi-Fi fields (see src/utils/partner_telemetry.py).
 
 TIER 2 — WebRTC W3C getStats() — RTCPeerConnection (WHEP live view)
     Type 'inbound-rtp' (video): jitter [s], packetsLost, framesDropped,
@@ -17,11 +18,11 @@ TIER 2 — WebRTC W3C getStats() — RTCPeerConnection (WHEP live view)
     Type 'candidate-pair': currentRoundTripTime [s], availableOutgoingBitrate
     Reference: W3C WebRTC Statistics API — https://www.w3.org/TR/webrtc-stats/
 
-Documented Ring Support Scenarios:
+Simulated fault scenarios (demo labels; the retriever never treats a label as evidence):
   - nominal                     -> All parameters optimal, healthy stream and hardware
   - wifi_degradation            -> Critical RSSI (< -80 dBm) + elevated packet loss + jitter
   - optical_physical            -> Optimal network transport, obstructed lens or inactive IR LEDs
-  - power_issue                 -> Critical battery (<10%) or transformer subvoltage (<14V AC)
+  - power_issue                 -> Critical battery (<10%) or transformer subvoltage (<12V AC, project heuristic)
   - pink_purple_tint            -> Mechanical IR Cut filter stuck in daytime position
   - night_vision_glare          -> IR reflection off adjacent wall (white haze / fog halo)
   - cold_battery_drain          -> Freezing temperature (< 0°C) blocking charge with rapid drain
@@ -37,23 +38,13 @@ Documented Ring Support Scenarios:
 import datetime
 from typing import Dict, Any
 
-# ---------------------------------------------------------------------------
-# Ring Diagnostic Thresholds (source: Ring App + Partner API documentation)
-# ---------------------------------------------------------------------------
-RSSI_THRESHOLDS = {
-    "good":   (-60, 0),
-    "fair":   (-80, -60),
-    "poor":   (-100, -80),
-}
-
-BATTERY_CRITICAL_PCT    = 10    # % below which Ring triggers critical push notification
-TRANSFORMER_NOMINAL_VAC = 16    # Nominal Ring transformer voltage (16V/30VA)
-TRANSFORMER_MIN_VAC     = 14    # Minimum threshold for stable continuous operation
+# Diagnostic thresholds live in src/agent/concierge.py (project heuristics). The unused,
+# conflicting copies that were here (transformer 14 V, labelled as Ring documentation) were removed.
 
 
 def _utcnow() -> str:
-    """ISO 8601 UTC timestamp, as returned by Ring Partner API."""
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Current UTC time as ISO 8601 (when this server built the payload)."""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class TelemetrySimulator:
@@ -117,7 +108,7 @@ class TelemetrySimulator:
         return builders[scenario]()
 
     # ------------------------------------------------------------------
-    # Constructores de escenario
+    # Scenario constructors
     # ------------------------------------------------------------------
 
     def _nominal(self) -> Dict[str, Any]:

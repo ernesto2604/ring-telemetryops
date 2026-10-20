@@ -1,10 +1,54 @@
 /**
- * Official Ring Parametric Telemetry Management
+ * Telemetry display: Digital Twin sliders (simulated) or Ring Partner API status (measured only)
  * Controls real-time continuous sliders, backend synchronization,
  * and reactive device health badge updates.
  */
 
 let telemetryDebounceTimer = null;
+
+// Diagnostic alert thresholds used by the heartbeat (web/js/app.js). Same values and meaning as
+// src/agent/concierge.py (parity: tests/test_threshold_parity.py). The badge and metric colour
+// bands below are display bands, not diagnostic rules.
+const BATTERY_CRITICAL_PCT = 10;        // battery % < this (immediate alert)
+const TRANSFORMER_MIN_VAC = 12.0;       // wired transformer VAC < this (project heuristic)
+const RSSI_DEGRADED_DBM = -75;          // rssi dBm < this
+const PACKET_LOSS_DEGRADED_PCT = 8.0;   // packet loss % > this
+const JITTER_DEGRADED_MS = 40.0;        // jitter ms > this
+
+// Shown for any metric the Ring Partner API did not report. Never replaced by slider values.
+const METRIC_NOT_AVAILABLE = 'N/D';
+
+// HTTP 429 without Retry-After: exponential backoff. Ring documents "exponential backoff
+// starting at 1 second"; the 300 s cap is a prototype choice. Polls never run faster than
+// the normal interval, so short backoff steps simply fall within it.
+const RATE_LIMIT_BACKOFF_BASE_SECONDS = 1;
+const RATE_LIMIT_BACKOFF_MAX_SECONDS = 300;
+
+/** Seconds to pause polling after a failed read, or 0 for none. */
+function pollPauseSeconds(status, retryAfterHeader) {
+  const retryAfter = parseFloat(retryAfterHeader);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter;   // always honour Retry-After
+  if (status !== 429) return 0;
+  state.rateLimitStreak++;
+  return Math.min(
+    RATE_LIMIT_BACKOFF_MAX_SECONDS,
+    RATE_LIMIT_BACKOFF_BASE_SECONDS * 2 ** (state.rateLimitStreak - 1),
+  );
+}
+
+function isPartnerSource() {
+  return state.ringSource === 'partner';
+}
+
+/** Only the Digital Twin (MOCK) may show slider values; any other source shows measured data only. */
+function showsMeasuredDataOnly() {
+  return isPartnerSource() || state.ringMode !== 'MOCK';
+}
+
+/** A measured number, or null when absent/not numeric (a measured 0 stays 0). */
+function measuredNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
 
 function updateSlider(key, val) {
   const v = parseFloat(val);
@@ -53,6 +97,11 @@ function updateSlider(key, val) {
 }
 
 function updateDeviceLiveBadges() {
+  if (showsMeasuredDataOnly()) {
+    // Partner mode: badges reflect official telemetry only, never the Digital Twin sliders.
+    updatePartnerBadges(state.telemetry);
+    return;
+  }
   const wifiEl = document.getElementById('badge-wifi');
   if (wifiEl) {
     if (state.rssi >= -60)      { wifiEl.textContent = '📶 Wi-Fi OK';    wifiEl.className = 'badge badge-green'; }
@@ -94,8 +143,48 @@ function updateDeviceLiveBadges() {
   updateLedHaloState();
 }
 
+let telemetryRefreshInFlight = false;
+
 async function refreshTelemetry() {
+  // Partner: one refresh at a time, so a slow Ring response never stacks extra requests.
+  if (isPartnerSource() && telemetryRefreshInFlight) return;
+  telemetryRefreshInFlight = isPartnerSource();
   try {
+    if (state.ringMode !== 'MOCK' && state.ringMode !== 'LIVE') {
+      // ERROR or not yet known: no data source. Replace what is on screen (static HTML or old values) with N/D.
+      state.telemetry = null;
+      updateMetricCards(null);
+      throw new Error('Ring credentials are configured but the LIVE adapter failed to connect');
+    }
+    if (state.ringMode === 'LIVE') {
+      const liveResponse = await fetch('/api/ring/telemetry');
+      if (!liveResponse.ok) {
+        if (isPartnerSource()) {
+          // An API failure says nothing about the device: no telemetry is shown (not "offline").
+          state.telemetry = null;
+          const message = await responseErrorMessage(liveResponse);
+          state.partnerApiError = { status: liveResponse.status, message };
+          // Retry-After (or 429 backoff): the poll timer skips requests until it has elapsed.
+          const pause = pollPauseSeconds(
+            liveResponse.status, liveResponse.headers && liveResponse.headers.get('Retry-After'));
+          state.pollPausedUntil = pause > 0 ? Date.now() + pause * 1000 : 0;
+          updateMetricCards(null);
+          const toast = `Ring telemetry unavailable: ${message}`;
+          if (state.lastTelemetryError !== toast && typeof showToast === 'function') showToast(toast, 'error');
+          state.lastTelemetryError = toast;
+        }
+        throw new Error(`Live telemetry request failed (${liveResponse.status})`);
+      }
+      const liveTelemetry = await liveResponse.json();
+      state.telemetry = liveTelemetry;
+      state.lastTelemetryError = null;
+      state.partnerApiError = null;
+      state.pollPausedUntil = 0;
+      state.rateLimitStreak = 0;   // a successful read resets the backoff
+      updateMetricCards(liveTelemetry);
+      return;
+    }
+
     const body = {
       mode:         'custom',
       power_mode:   state.powerMode,
@@ -125,10 +214,29 @@ async function refreshTelemetry() {
     updateMetricCards(t);
   } catch (e) {
     console.warn('refreshTelemetry error', e);
+  } finally {
+    telemetryRefreshInFlight = false;
   }
 }
 
+/** Readable error text from a failed API response (FastAPI `detail` may be a string or an object). */
+async function responseErrorMessage(response) {
+  try {
+    const body = await response.json();
+    const detail = body && body.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && detail.message) return detail.message;
+  } catch {
+    // Non-JSON error body: fall back to the HTTP status.
+  }
+  return `HTTP ${response.status}`;
+}
+
 function updateMetricCards(t) {
+  if (showsMeasuredDataOnly()) {
+    updatePartnerMetricCards(t);
+    return;
+  }
   const dh  = t.device_health  || {};
   const rtp = (t.webrtc_stats  || {}).inbound_rtp || {};
 
@@ -141,6 +249,125 @@ function updateMetricCards(t) {
   setMetric('m-battery', battery, battClass(battery));
   setMetric('m-jitter',  jitter,  jitterClass(parseFloat(jitter)));
   setMetric('m-loss',    loss,    lossClass(parseFloat(loss)));
+}
+
+function updatePartnerMetricCards(t) {
+  const dh  = (t && t.device_health) || {};
+  const rtp = ((t && t.webrtc_stats) || {}).inbound_rtp || {};
+
+  const rssi     = measuredNumber(dh.rssi);
+  const battery  = measuredNumber(dh.battery_percentage);
+  const jitterS  = measuredNumber(rtp.jitter);
+  const lossFrac = measuredNumber(rtp.packet_loss_fraction);
+  const jitterMs = jitterS === null ? null : jitterS * 1000;
+  const lossPct  = lossFrac === null ? null : lossFrac * 100;
+
+  setMeasuredMetric('m-rssi',    rssi,     v => v,             rssiClass);
+  setMeasuredMetric('m-battery', battery,  v => v,             battClass);
+  setMeasuredMetric('m-jitter',  jitterMs, v => v.toFixed(1),  jitterClass);
+  setMeasuredMetric('m-loss',    lossPct,  v => v.toFixed(1),  lossClass);
+  updatePartnerBadges(t);
+}
+
+function setMeasuredMetric(id, value, format, classify) {
+  if (value === null) {
+    setMetric(id, METRIC_NOT_AVAILABLE, 'metric-unavailable');
+  } else {
+    setMetric(id, format(value), classify(value));
+  }
+}
+
+/** Ring-reported reachability: true / false / anything else is unknown (never inferred). */
+function onlineLabel(online) {
+  if (online === true)  return { text: '🟢 Online',      cls: 'badge badge-green' };
+  if (online === false) return { text: '🔴 Offline',     cls: 'badge badge-red' };
+  return                       { text: `⚪ Online ${METRIC_NOT_AVAILABLE}`, cls: 'badge' };
+}
+
+/**
+ * 'supported' | 'unsupported' | 'unknown' for one capability value, using documented markers only:
+ * a `supported` boolean, or a non-empty list (codecs, configurations). Bare booleans, numbers
+ * (0 or not), strings, empty lists and null say nothing about support.
+ */
+function capabilityState(value) {
+  if (Array.isArray(value)) return value.length ? 'supported' : 'unknown';
+  if (!value || typeof value !== 'object') return 'unknown';
+  if (typeof value.supported === 'boolean') return value.supported ? 'supported' : 'unsupported';
+  const states = Object.values(value).map(capabilityState);
+  return states.includes('supported') ? 'supported' : states.includes('unsupported') ? 'unsupported' : 'unknown';
+}
+
+function capabilitiesText(caps) {
+  const names = state => Object.keys(caps).filter(name =>
+    // Ring documents battery_status: null as "not a battery-powered device".
+    (name === 'battery_status' && caps[name] === null ? 'unsupported' : capabilityState(caps[name])) === state);
+  const supported = names('supported');
+  const unsupported = names('unsupported');
+  if (!supported.length && !unsupported.length) return 'Ring capabilities: none reported';
+  return `Ring capabilities: ${supported.join(', ') || 'none'}`
+    + (unsupported.length ? ` · Not supported: ${unsupported.join(', ')}` : '');
+}
+
+function updatePartnerBadges(t) {
+  const dh = (t && t.device_health) || {};
+
+  // Identity as returned by Ring discovery; the Digital Twin's model and ID are never shown here.
+  const nameEl = document.getElementById('dev-name');
+  if (nameEl) nameEl.textContent = (t && t.device_name) || `Device name ${METRIC_NOT_AVAILABLE}`;
+  const idEl = document.getElementById('dev-id');
+  if (idEl) idEl.textContent = `ID: ${(t && t.device_id) || METRIC_NOT_AVAILABLE}`;
+  const capsEl = document.getElementById('partner-capabilities');
+  if (capsEl) {
+    const caps = t && t.capabilities;
+    capsEl.style.display = '';
+    capsEl.textContent = caps && typeof caps === 'object' && !Array.isArray(caps)
+      ? capabilitiesText(caps) : `Ring capabilities ${METRIC_NOT_AVAILABLE}`;
+  }
+
+  const onlineEl = document.getElementById('badge-online');
+  if (onlineEl) {
+    const label = onlineLabel(dh.online);
+    onlineEl.textContent = label.text;
+    onlineEl.className = label.cls;
+    // reported_at is the device's last check-in (uplink), not the current time.
+    onlineEl.title = dh.updated_at
+      ? `Last device check-in reported by Ring: ${dh.updated_at}`
+      : 'Last device check-in not reported by Ring';
+  }
+  const apiErrEl = document.getElementById('badge-api-error');
+  if (apiErrEl) {
+    const err = state.partnerApiError;
+    apiErrEl.style.display = err ? '' : 'none';
+    apiErrEl.textContent = err ? `⚠️ Ring API error (HTTP ${err.status})` : '';
+    apiErrEl.title = err ? err.message : '';
+  }
+
+  const rssi = measuredNumber(dh.rssi);
+  const battery = measuredNumber(dh.battery_percentage);
+  const transformer = measuredNumber(dh.transformer_voltage_vac);
+
+  const wifiEl = document.getElementById('badge-wifi');
+  if (wifiEl) {
+    if (rssi === null)      { wifiEl.textContent = `📶 Wi-Fi ${METRIC_NOT_AVAILABLE}`; wifiEl.className = 'badge'; }
+    else if (rssi >= -60)   { wifiEl.textContent = '📶 Wi-Fi OK';    wifiEl.className = 'badge badge-green'; }
+    else if (rssi >= -75)   { wifiEl.textContent = '📶 Wi-Fi Weak';  wifiEl.className = 'badge badge-yellow'; }
+    else                    { wifiEl.textContent = '📶 Wi-Fi Poor';  wifiEl.className = 'badge badge-red'; }
+  }
+
+  const batEl = document.getElementById('badge-battery');
+  if (batEl) {
+    // Only measured values are shown; the power setup is never inferred from missing data.
+    if (battery !== null) {
+      batEl.textContent = `🔋 ${battery}%`;
+      batEl.className = 'badge ' + (battery >= 30 ? 'badge-green' : battery >= 10 ? 'badge-yellow' : 'badge-red');
+    } else if (transformer !== null) {
+      batEl.textContent = `⚡ ${transformer.toFixed(1)}V`;
+      batEl.className = 'badge ' + (transformer === 0 ? 'badge-red' : transformer < 12 ? 'badge-yellow' : 'badge-green');
+    } else {
+      batEl.textContent = `🔋 Power ${METRIC_NOT_AVAILABLE}`;
+      batEl.className = 'badge';
+    }
+  }
 }
 
 function setMetric(id, val, cls) {
@@ -213,7 +440,8 @@ function resetTelemetryDefaults() {
 
   state.anomalyConsecutiveCount = 0;
   state.lastAnomalyDomain = null;
-  state.lastDiagnosedAnomalySignature = null;
+  state.lastAnomalyReason = null;
+  if (typeof dismissDiagnosis === 'function') dismissDiagnosis();   // also clears the dedup signature
   if (typeof updateHeartbeatUI === 'function') updateHeartbeatUI();
 
   refreshTelemetry();

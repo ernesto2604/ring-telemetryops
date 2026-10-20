@@ -5,7 +5,8 @@
     "official": "Fact directly documented by Ring.",
     "official_inference": "Reasonable diagnostic conclusion derived from Ring documentation, but not a literal Ring statement.",
     "contextual_only": "Project telemetry that may support diagnosis but has no Ring-published threshold in the reviewed documentation.",
-    "engineering": "Project-specific heuristic. Must never be presented as an official Ring threshold."
+    "engineering": "Project-specific heuristic. Must never be presented as an official Ring threshold.",
+    "unverified": "Content attributed to Ring whose source has not been verified by this project (source titles have no URLs). Must never be presented as official Ring documentation. `declared_evidence_level` keeps the level the article originally claimed; `verification` and `source_verification` mark individual unverified or pending items."
   },
   "issues": [
     {
@@ -14,7 +15,8 @@
       "issue_type": "weak_wifi_signal",
       "title": "Weak or Unstable Wi-Fi Signal",
       "root_cause_domain": "NETWORK",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Slow or intermittent Live View",
@@ -101,7 +103,8 @@
       "issue_type": "poor_device_transmit_speed",
       "title": "Insufficient Ring Device Transmit Speed",
       "root_cause_domain": "NETWORK",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Connectivity issues",
@@ -173,7 +176,8 @@
       "issue_type": "poor_internet_upload_speed",
       "title": "Insufficient Internet Upload Speed",
       "root_cause_domain": "INTERNET",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Slow video loading",
@@ -243,7 +247,8 @@
       "issue_type": "device_offline",
       "title": "Ring Device Disconnected or Offline",
       "root_cause_domain": "CONNECTIVITY",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "critical",
       "symptoms": [
         "Device appears offline in the Ring app",
@@ -264,6 +269,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/status",
+          "verification": "unverified: used by this project's read-only client (src/utils/ring_partner_client.py), but not re-verified against Ring documentation in this environment",
           "field": "online"
         }
       ],
@@ -309,7 +315,8 @@
       "issue_type": "low_video_quality",
       "title": "Poor Video Quality, Blurry, Washed Out, or Overexposed",
       "root_cause_domain": "VIDEO",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Blurry or out-of-focus image",
@@ -392,7 +399,8 @@
       "issue_type": "live_view_or_recording_unavailable",
       "title": "Live View or Video Recordings Unavailable",
       "root_cause_domain": "VIDEO_ACCESS",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Live View streaming fails with 'Streaming error' or 'Tap to retry'",
@@ -424,7 +432,7 @@
         },
         {
           "condition": "rssi_dbm <= -80",
-          "interpretation": "Official Ring Wi-Fi category is Very Poor."
+          "interpretation": "Very Poor Wi-Fi category as cited by KB-RING-001 (source pending verification)."
         }
       ],
       "recommended_actions": [
@@ -458,7 +466,8 @@
       "issue_type": "night_vision_or_image_color_issue",
       "title": "Night Vision, Color, IR Filter, or Glare Issues",
       "root_cause_domain": "VIDEO_OPTICS",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "medium",
       "symptoms": [
         "Black and white image during daylight hours",
@@ -532,7 +541,8 @@
       "issue_type": "no_audio_or_two_way_talk_failure",
       "title": "Missing Audio or Two-Way Talk Issues",
       "root_cause_domain": "AUDIO",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "medium",
       "symptoms": [
         "User cannot hear audio from visitor at the door",
@@ -612,7 +622,9 @@
       "issue_type": "incorrect_or_insufficient_hardwired_power",
       "title": "Insufficient Power, Critical Battery, or Inadequate Transformer",
       "root_cause_domain": "POWER",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
+      "source_verification": "pending: official_sources are Ring Help Center article titles without URLs; the voltage figures in this article have not been re-verified against Ring documentation by this project.",
       "priority": "critical",
       "symptoms": [
         "Device reboots spontaneously during ring press or motion event",
@@ -623,9 +635,9 @@
         "Advanced features (HDR, Pre-Roll) disabled due to low power"
       ],
       "official_facts": [
-        "Ring states that hardwired devices require a compatible power source (typically 16-24 VAC, 10-40 VA).",
+        "Hardwired devices require a compatible power source; the voltage and VA rating depend on the device model (figures in official_power_requirements pending verification).",
         "Ring states that incorrect transformer ratings can stop devices or in-home chimes from working correctly.",
-        "Ring Video Doorbells connected to low-voltage transformers (< 16 VAC under load) suffer brownout reboot loops.",
+        "Low transformer voltage under load can cause brownout reboot loops; the minimum voltage depends on the device model (see official_power_requirements).",
         "Lithium-ion batteries inside Ring devices cannot charge in freezing temperatures (below 0°C / 32°F).",
         "A drained battery takes 6 to 8 hours to reach full charge via micro-USB / USB-C charging cable.",
         "Bypassing the in-home chime with a Pro Power Kit is mandatory for Ring Video Doorbell Pro models."
@@ -634,20 +646,23 @@
         {
           "device_type": "Wired (Pro/Elite)",
           "voltage": "16-24 VAC",
-          "va": "10-40 VA"
+          "va": "10-40 VA",
+          "verification": "pending: figure not re-verified against Ring documentation"
         },
         {
           "device_type": "Battery-powered (Doorbell 1/2/3/4)",
           "voltage": "8-24 VAC",
-          "va": "5-40 VA"
+          "va": "5-40 VA",
+          "verification": "pending: figure not re-verified against Ring documentation"
         },
         {
           "device_type": "Multiple doorbells on same transformer",
           "voltage": "16 VAC",
-          "va": "30 VA"
+          "va": "30 VA",
+          "verification": "pending: figure not re-verified against Ring documentation"
         }
       ],
-      "important_constraint": "Do not use a generic transformer threshold such as 14 VAC. Ring's documented requirements depend on the specific device and configuration.",
+      "important_constraint": "Do not use a generic transformer threshold such as 14 VAC. Ring's requirements depend on the specific device and configuration (per-model figures pending verification). The project's 12 VAC undervoltage heuristic and its 16 VAC mechanical chime rule are diagnostic rules, not Ring requirements.",
       "diagnostic_metrics": [
         "transformer_voltage_vac",
         "battery_percentage",
@@ -656,7 +671,7 @@
       ],
       "recommended_actions": [
         "Identify the exact Ring device model and check its power requirements.",
-        "Check transformer voltage and VA rating in Device Health (must be 16-24 VAC).",
+        "Check transformer voltage and VA rating in Device Health against the requirements of the exact device model.",
         "For battery models, remove battery and recharge fully with a 5V/2A charger before reinserting.",
         "If operating in freezing weather, bring battery indoors to warm up and charge.",
         "Install an upgraded doorbell transformer (e.g. Ring Plug-In Adapter or 16V 30VA transformer).",
@@ -692,7 +707,8 @@
       "issue_type": "missed_motion_events_or_notifications",
       "title": "Missed Motion Events or Push Notifications",
       "root_cause_domain": "MOTION_NOTIFICATIONS",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "No motion push notifications received on smartphone",
@@ -741,6 +757,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "motion zones",
             "privacy zones",
@@ -750,6 +767,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/history/devices/{device_id}/events",
+          "verification": "unverified: a queryable motion-event endpoint is not confirmed by the documentation reviewed by this project and is not implemented; do not treat motion events as available from the Ring Partner API",
           "relevant_data": [
             "motion events",
             "device activity"
@@ -800,7 +818,8 @@
       "issue_type": "solar_panel_not_charging",
       "title": "Solar Panel Not Charging Ring Doorbell or Camera Battery",
       "root_cause_domain": "ENVIRONMENT_POWER",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Doorbell battery discharges despite solar panel being plugged in",
@@ -842,6 +861,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}",
+          "verification": "unverified: the client reads /v1/devices only for discovery; these attributes are not confirmed by the documentation reviewed by this project and are not read by it",
           "relevant_data": [
             "attributes.battery_percentage",
             "attributes.power_source",
@@ -880,7 +900,8 @@
       "issue_type": "ring_elite_poe_power_or_link_loss",
       "title": "Ethernet Link Loss or Power Failure on Ring Video Doorbell Elite (PoE)",
       "root_cause_domain": "HARDWARE_NETWORK",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "high",
       "symptoms": [
         "Ring Doorbell Elite appears offline in the app despite LED ring being lit",
@@ -914,6 +935,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}",
+          "verification": "unverified: the client reads /v1/devices only for discovery; these attributes are not confirmed by the documentation reviewed by this project and are not read by it",
           "relevant_data": [
             "attributes.network_connection_type",
             "attributes.online_status"
@@ -951,7 +973,9 @@
       "issue_type": "in_home_chime_failure",
       "title": "In-Home Mechanical or Digital Chime Not Ringing on Doorbell Press",
       "root_cause_domain": "CHIME_HARDWARE",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
+      "source_verification": "pending: official_sources are Ring Help Center article titles without URLs; the 16 VAC figure and the configurations endpoint mapping have not been re-verified against Ring documentation by this project.",
       "priority": "medium",
       "symptoms": [
         "Exterior Ring doorbell rings and sends app notification, but indoor house chime does not ring",
@@ -963,7 +987,8 @@
           "metric": "transformer_voltage_vac",
           "operator": "lt",
           "value": 16.0,
-          "interpretation": "Insufficient transformer voltage to simultaneously power Ring doorbell electronics and mechanical chime solenoid.",
+          "requires": {"chime_type_setting": "mechanical"},
+          "interpretation": "Project diagnostic rule for mechanical chimes (not a Ring-published threshold): transformer voltage may be insufficient to power both the doorbell electronics and the chime solenoid.",
           "diagnostic_weight": 0.85
         },
         {
@@ -976,7 +1001,7 @@
       ],
       "official_facts": [
         "Ring doorbells require the correct In-Home Chime Type setting in the Ring App: Mechanical (solenoid chime) or Digital (electronic melody chime).",
-        "In hardwired installations, when the doorbell button is pressed, the Ring device bridges the circuit; if transformer voltage drops below 16 VAC under load, the solenoid will hum instead of striking.",
+        "In hardwired installations, when the doorbell button is pressed, the Ring device bridges the circuit; insufficient transformer voltage under load can make a mechanical solenoid hum instead of striking (this project flags it below 16 VAC as a product diagnostic rule, not a Ring specification).",
         "Digital electronic chimes require setting a chime ring duration (typically 2 to 5 seconds) to play the chime audio file.",
         "Failure to install the included Pro Power Kit or terminal jumper can cause chime humming and damage the transformer."
       ],
@@ -984,6 +1009,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.chime_type",
             "configurations.chime_duration_ms"
@@ -993,7 +1019,7 @@
       "recommended_actions": [
         "Open Ring App, navigate to Device Settings > In-Home Chime Settings, and verify Mechanical or Digital chime is selected.",
         "For digital chimes, verify ring duration setting in the app allows sufficient time to play the full melody.",
-        "Inspect in-home chime transformer voltage under load (must maintain >= 16 VAC).",
+        "Inspect in-home chime transformer voltage under load (project rule for mechanical chimes: 16 VAC or more).",
         "Verify terminal wiring and confirm Pro Power Kit / jumper wire is installed correctly across chime terminals.",
         "Check chime compatibility list on Ring Help Center to ensure chime model is supported."
       ],
@@ -1022,7 +1048,8 @@
       "issue_type": "led_frequency_flickering_banding",
       "title": "Flickering or Horizontal Video Banding from LED Lighting (50Hz / 60Hz)",
       "root_cause_domain": "VIDEO_OPTICS",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
       "priority": "medium",
       "symptoms": [
         "Flickering horizontal dark bands or rolling lines moving across Live View video",
@@ -1055,6 +1082,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.video_frequency",
             "configurations.anti_flicker_mode"
@@ -1091,11 +1119,13 @@
       "issue_type": "whep_session_negotiation_failure",
       "title": "WebRTC / WHEP Live View Negotiation Failure or E2EE Block",
       "root_cause_domain": "NETWORK_WEBRTC",
-      "evidence_level": "official",
+      "evidence_level": "unverified",
+      "declared_evidence_level": "official",
+      "source_verification": "pending: official_sources are titles without URLs; the WHEP, E2EE, host and scope details in this article have not been verified by this project, and WHEP is not implemented.",
       "priority": "high",
       "symptoms": [
         "Streaming error 'Streaming could not be started' or 'Live View unavailable' when requesting WHEP session",
-        "POST /v1/devices/{device_id}/media/streaming/whep/sessions endpoint responds with 400 Bad Request or 409 Conflict",
+        "A WHEP session request responds with 400 Bad Request or 409 Conflict (endpoint not verified by this project)",
         "Screen remains black with infinite loading indicator in third-party API integrations",
         "Camera has End-to-End Encryption (E2EE) enabled and API rejects stream request"
       ],
@@ -1116,7 +1146,7 @@
         }
       ],
       "official_facts": [
-        "Ring utilizes the WHEP (WebRTC HTTP Egress Protocol) standard for low-latency live video streaming via https://api.amazonvision.com.",
+        "Live video is described as using the WHEP (WebRTC HTTP Egress Protocol) standard for low-latency streaming (unverified by this project; WHEP is not implemented here).",
         "WHEP sessions require an SDP offer sent with Content-Type: application/sdp and Bearer OAuth authorization.",
         "End-to-End Encryption (E2EE) on Ring devices encrypts video at the edge using customer-managed keys; cloud WHEP endpoints cannot proxy unencrypted streams when E2EE is active.",
         "Only one active WHEP streaming session is permitted per camera simultaneously; concurrent requests yield 409 Conflict.",
@@ -1128,6 +1158,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "POST /v1/devices/{device_id}/media/streaming/whep/sessions",
+          "verification": "unverified: not confirmed by the documentation reviewed by this project and not implemented; the Digital Twin WHEP answer is simulated",
           "relevant_data": [
             "SDP offer/answer",
             "component_id",
@@ -1137,6 +1168,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
+          "verification": "unverified: this endpoint is not confirmed by the Ring Partner API documentation reviewed by this project (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "attributes.e2e_encryption.enabled"
           ]
@@ -1146,7 +1178,7 @@
         "Check if End-to-End Encryption (E2EE) is enabled in the Ring App; third-party APIs cannot access live streams without client-side key decryption.",
         "For multi-camera devices or Ring Elite, ensure 'component_id' query parameter is specified in the WHEP URL.",
         "Confirm no other client or Ring App session is actively streaming from the camera to avoid 409 Conflict.",
-        "Verify Ring Partner OAuth 2.0 access token has ring:device:streaming:read scope and is not expired.",
+        "Verify the Ring Partner OAuth 2.0 access token is not expired and has the streaming permission Ring requires (the scope name is not verified by this project).",
         "Check local firewall allows outbound UDP traffic on WebRTC ports (10000-20000) and ICE STUN/TURN binding.",
         "Retry session creation with refreshed SDP offer after closing orphan WHEP sessions."
       ],

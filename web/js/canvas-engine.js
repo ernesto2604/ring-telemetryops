@@ -22,6 +22,10 @@ const cx = {
   isFrozen: false,
   frozenFrames: 0,
   displayFps: 30,
+  livePeerConnection: null,
+  liveStream: null,
+  statsTimer: null,
+  previousStats: null,
 };
 
 function initCanvasEngine() {
@@ -48,6 +52,90 @@ function initCanvasEngine() {
   updateCanvasEffects();
 }
 
+async function prepareLiveRingStream() {
+  const video = document.getElementById('live-video-player');
+  if (!video || !window.RTCPeerConnection) {
+    throw new Error('This browser does not support WebRTC live playback.');
+  }
+  if (cx.livePeerConnection) return;
+
+  const peer = new RTCPeerConnection();
+  cx.livePeerConnection = peer;
+  peer.addTransceiver('video', { direction: 'recvonly' });
+  peer.ontrack = event => {
+    cx.liveStream = event.streams[0];
+    video.srcObject = cx.liveStream;
+    video.play().catch(() => {});
+    renderLoop();
+  };
+
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  const response = await fetch('/api/ring/whep-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/sdp' },
+    body: offer.sdp,
+  });
+  if (!response.ok) {
+    peer.close();
+    cx.livePeerConnection = null;
+    throw new Error(`Ring WHEP negotiation failed (${response.status})`);
+  }
+  const session = await response.json();
+  await peer.setRemoteDescription({ type: 'answer', sdp: session.sdp_answer });
+  cx.previousStats = null;
+  cx.statsTimer = setInterval(collectLiveWebrtcStats, 1000);
+}
+
+async function collectLiveWebrtcStats() {
+  const peer = cx.livePeerConnection;
+  if (!peer || typeof peer.getStats !== 'function') return;
+
+  const report = await peer.getStats();
+  let inbound = null;
+  let candidatePair = null;
+  report.forEach(stat => {
+    if (stat.type === 'inbound-rtp' && stat.kind === 'video') inbound = stat;
+    if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && stat.nominated) {
+      candidatePair = stat;
+    }
+  });
+  if (!inbound) return;
+
+  const previous = cx.previousStats;
+  const elapsedSeconds = previous ? Math.max(0.001, (inbound.timestamp - previous.timestamp) / 1000) : null;
+  const bytesDelta = previous && elapsedSeconds ? Math.max(0, inbound.bytesReceived - previous.bytesReceived) : null;
+  const framesDelta = previous && elapsedSeconds ? Math.max(0, inbound.framesReceived - previous.framesReceived) : null;
+  const lostDelta = previous && Number.isFinite(inbound.packetsLost) && Number.isFinite(previous.packetsLost)
+    ? Math.max(0, inbound.packetsLost - previous.packetsLost)
+    : null;
+  const receivedDelta = previous && Number.isFinite(inbound.packetsReceived) && Number.isFinite(previous.packetsReceived)
+    ? Math.max(0, inbound.packetsReceived - previous.packetsReceived)
+    : null;
+  const packetCount = lostDelta !== null && receivedDelta !== null
+    ? lostDelta + receivedDelta
+    : null;
+  state.liveWebrtcStats = {
+    inbound_rtp: {
+      kind: 'video',
+      jitter: inbound.jitter ?? null,
+      packets_lost: inbound.packetsLost ?? null,
+      packet_loss_fraction: packetCount > 0 ? lostDelta / packetCount : (packetCount === 0 ? 0 : null),
+      frames_dropped: inbound.framesDropped ?? null,
+      frames_received: inbound.framesReceived ?? null,
+      frames_per_second: framesDelta !== null ? framesDelta / elapsedSeconds : null,
+      bytes_received: inbound.bytesReceived ?? null,
+      bitrate_kbps: bytesDelta !== null ? (bytesDelta * 8) / elapsedSeconds / 1000 : null,
+    },
+    candidate_pair: {
+      current_round_trip_time: candidatePair?.currentRoundTripTime ?? null,
+      available_outgoing_bitrate: candidatePair?.availableOutgoingBitrate ?? null,
+      state: candidatePair?.state ?? null,
+    },
+  };
+  cx.previousStats = inbound;
+}
+
 /**
  * Wakes camera on physical or user trigger
  * @param {'ding' | 'motion' | 'live'} reason 
@@ -61,6 +149,12 @@ function activateCamera(reason, durationSec = 30) {
   const hudMeta = document.getElementById('hud-cam-meta');
 
   if (!video || !canvas) return;
+  if (state.ringMode !== 'MOCK') {
+    // Only the Digital Twin has a camera feed (a sample MP4). Ring Partner API live video is not
+    // implemented, so nothing is ever shown as a Ring stream.
+    showToast('Live video is not available: Ring Partner API streaming is not implemented.', 'error');
+    return;
+  }
 
   cx.cameraActive = true;
   cx.sessionReason = reason;
@@ -82,7 +176,6 @@ function activateCamera(reason, durationSec = 30) {
     hudMeta.textContent = `Ring 1080p HDR • ${Math.round(cx.displayFps)} FPS`;
   }
 
-  // Play base video
   video.play().catch(() => {});
   updateCanvasEffects();
   renderLoop();
@@ -97,7 +190,7 @@ function activateCamera(reason, durationSec = 30) {
     let remaining = durationSec;
     if (hudLive) {
       hudLive.style.display = 'flex';
-      hudLive.innerHTML = `<span class="rec-dot"></span> LIVE • ${baseTag} (${remaining}s)`;
+      hudLive.innerHTML = `<span class="rec-dot"></span> SIMULATED • ${baseTag} (${remaining}s)`;
     }
 
     cx.sessionTimer = setInterval(() => {
@@ -109,14 +202,14 @@ function activateCamera(reason, durationSec = 30) {
         showToast(`⏱️ Camera session ended (${durationSec}s elapsed - Return to Standby)`, 'info');
       } else {
         if (hudLive) {
-          hudLive.innerHTML = `<span class="rec-dot"></span> LIVE • ${baseTag} (${remaining}s)`;
+          hudLive.innerHTML = `<span class="rec-dot"></span> SIMULATED • ${baseTag} (${remaining}s)`;
         }
       }
     }, 1000);
   } else {
     if (hudLive) {
       hudLive.style.display = 'flex';
-      hudLive.innerHTML = `<span class="rec-dot"></span> LIVE • ${baseTag}`;
+      hudLive.innerHTML = `<span class="rec-dot"></span> SIMULATED • ${baseTag}`;
     }
   }
 
@@ -138,6 +231,17 @@ function deactivateCamera() {
   }
 
   if (video) video.pause();
+  if (cx.statsTimer) {
+    clearInterval(cx.statsTimer);
+    cx.statsTimer = null;
+  }
+  if (cx.livePeerConnection) {
+    cx.livePeerConnection.close();
+    cx.livePeerConnection = null;
+    cx.liveStream = null;
+    if (video) video.srcObject = null;
+  }
+  state.liveWebrtcStats = null;
   if (canvas) canvas.classList.remove('active');
   if (standby) standby.classList.remove('hidden');
   if (hudLive) hudLive.style.display = 'none';
@@ -196,6 +300,14 @@ function updateSignalHUD(rssi, loss, fps) {
   const fpsPill = document.getElementById('hud-fps-live');
   const hudLive = document.getElementById('hud-live-indicator');
   if (!pill) return;
+
+  if (typeof showsMeasuredDataOnly === 'function' && showsMeasuredDataOnly()) {
+    // Partner, ERROR or unknown mode: never derive signal quality from Digital Twin sliders.
+    pill.textContent = '📡 Signal N/D';
+    pill.className = 'signal-quality-pill';
+    if (fpsPill) fpsPill.textContent = 'N/D FPS';
+    return;
+  }
 
   let label, cls;
   if (cx.powerCut) {

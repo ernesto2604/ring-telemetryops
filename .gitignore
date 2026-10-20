@@ -33,6 +33,9 @@ venv.bak/
 .env
 .env.*
 !.env.example
+# OAuth token cache of the removed unofficial Ring adapter: never commit it if one still exists
+.ring_token.cache
+*.token.cache
 
 # IDEs & Editors
 .vscode/
@@ -40,8 +43,10 @@ venv.bak/
 *.sublime-project
 *.sublime-workspace
 
-# Temporary analysis frames / generated evidence
+# Temporary analysis frames / generated evidence / user uploads
 data/temp/
+data/frames/
+data/uploads/
 *.jpg
 *.jpeg
 *.png
@@ -53,3 +58,5 @@ data/samples/*.mp4
 !data/samples/good_internet.mp4
 !data/samples/bad_internet.mp4
 !data/samples/optical_obstruction.mp4
+# Local diagnostic dumps (e.g. a saved `git diff` output); never part of the project
+qqcl

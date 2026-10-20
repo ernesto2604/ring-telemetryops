@@ -101,7 +101,7 @@ function pressDoorbellButton() {
     setTimeout(() => { banner.style.display = 'none'; }, 5500);
   }
 
-  showToast('🔔 DING! Doorbell physically pressed — Active WHEP/SIP connection', 'info');
+  showToast('🔔 DING! Simulated doorbell press (Digital Twin)', 'info');
 
   // Wake camera if it was on Standby
   if (typeof activateCamera === 'function') {
@@ -134,6 +134,7 @@ function toggleDirtyLens() {
   document.getElementById('lens-dirty-layer')?.classList.toggle('active', active);
   document.getElementById('hw-btn-dirty')?.classList.toggle('active-warn', active);
   updateCanvasEffects();
+  refreshTelemetry();
 
   if (active) {
     showToast('💧 Dirty lens: Optical blur introduced on camera', 'warning');
@@ -165,6 +166,7 @@ function togglePinkFilter() {
   document.getElementById('lens-pink-layer')?.classList.toggle('active', active);
   document.getElementById('hw-btn-pink')?.classList.toggle('active-warn', active);
   updateCanvasEffects();
+  refreshTelemetry();
 
   if (active) {
     showToast('🌸 IR-cut filter solenoid stuck (Magenta discoloration physical fault)', 'warning');
@@ -178,6 +180,7 @@ function toggleFlickerLight() {
   const active = state.hardwareFaults.flicker;
   document.getElementById('hw-btn-flicker')?.classList.toggle('active-warn', active);
   updateCanvasEffects();
+  refreshTelemetry();
 
   if (active) {
     showToast('💡 External lighting strobe flicker (50/60 Hz)', 'warning');
@@ -235,6 +238,15 @@ function updateLedHaloState() {
   const halo = document.getElementById('ring-led-halo');
   if (!halo) return;
   if (halo.classList.contains('led-ringing')) return;
+
+  if (typeof showsMeasuredDataOnly === 'function' && showsMeasuredDataOnly()) {
+    // Outside the Twin only Ring-reported reachability drives the halo; unknown stays neutral.
+    const dh = (state.telemetry && state.telemetry.device_health) || {};
+    halo.className = dh.online === true ? 'ring-led-halo led-idle'
+                   : dh.online === false ? 'ring-led-halo led-offline'
+                   : 'ring-led-halo';
+    return;
+  }
 
   if (state.hardwareFaults.powerCut || state.transformer === 0) {
     halo.className = 'ring-led-halo led-offline';

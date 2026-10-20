@@ -5,10 +5,10 @@ Retrieval-Augmented Generation (RAG) Engine for Ring diagnostic standard operati
 Cross-references multimodal metrics across 3 sources:
   1. diagnostic_report : Quantitative visual metrics from VideoAnalyzer (OpenCV)
   2. telemetry         : Ring Partner API device health + WebRTC W3C getStats()
-  3. user_query / issue: Semantic and keyword matching across official Ring symptoms
+  3. user_query / issue: Semantic and keyword matching across the KB symptoms
 
 Knowledge Base: data/knowledge_base/ring_video_troubleshooting.json (v2.1)
-Official reference: Ring Help Center & Ring Support Articles.
+KB sources: Ring Help Center article titles cited per article (not re-verified by this project).
 """
 
 import sys
@@ -20,12 +20,16 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.video_pipeline.analyzer import MIN_SHARPNESS_SCORE
+
 
 class KnowledgeRetriever:
     """
-    RAG Retrieval Engine for official Ring troubleshooting SOPs.
+    RAG Retrieval Engine for the project's Ring-informed troubleshooting knowledge base.
 
-    Official Ring thresholds:
+    Bands as cited by the KB articles (Ring Help Center titles, e.g. "Understanding Wi-Fi
+    recommendations for Ring devices"); they are not part of the Ring Partner API, and the
+    Partner API reports no RSSI:
       RSSI 0 to -60 dBm               -> Great
       RSSI -60 to -70 dBm             -> Okay
       RSSI -70 to -80 dBm             -> Poor (intermittent dropouts)
@@ -38,16 +42,20 @@ class KnowledgeRetriever:
       Internet Upload Speed < 5 Mbps  -> POOR
     """
 
-    # Official Ring RSSI thresholds
-    RSSI_GREAT = -60   # dBm — Great (Ring doc)
+    # RSSI bands as cited by KB-RING-001 (see class docstring)
+    RSSI_GREAT = -60   # dBm — Great
     RSSI_OKAY  = -70   # dBm — Okay
     RSSI_POOR  = -80   # dBm — Poor / Very Poor boundary
 
-    # Official Ring speed thresholds
+    # Speed bands as cited by KB-RING-002 / KB-RING-003
     TX_GOOD    = 20    # Mbps device transmit — GOOD
     TX_OKAY    = 10    # Mbps device transmit — OKAY boundary
     UL_GOOD    = 10    # Mbps internet upload  — GOOD
     UL_OKAY    = 5     # Mbps internet upload  — OKAY boundary
+
+    # Project heuristic, same value as concierge.TRANSFORMER_MIN_VAC (not imported: concierge
+    # imports this module). Parity: tests/test_voltage_retrieval.py.
+    TRANSFORMER_MIN_VAC = 12.0
 
     def __init__(self, kb_path: str = "data/knowledge_base/ring_video_troubleshooting.json"):
         self.kb_path = Path(kb_path)
@@ -84,6 +92,9 @@ class KnowledgeRetriever:
         current = telemetry_flat.get(metric)
         if current is None:
             return None
+        # A signal scoped to a configuration (e.g. a mechanical chime) only applies when it is reported.
+        if any(telemetry_flat.get(k) != v for k, v in signal.get("requires", {}).items()):
+            return None
 
         try:
             if operator == "lte":
@@ -98,9 +109,14 @@ class KnowledgeRetriever:
                 return weight if current == value else None
             elif operator in ("range", "between"):
                 if isinstance(value, str) and "_to_" in value:
-                    lo, hi = value.split("_to_")
-                    lo_f = float(lo) if lo not in ("0", "") else float("-inf")
-                    return weight if lo_f <= float(current) <= float(hi) else None
+                    # "a_to_b" is a band in either order ("0_to_-60" = -60..0). The bound nearer
+                    # zero is inclusive and the far one exclusive, so adjacent bands never overlap:
+                    # with KB-RING-001, -59 is Great, -60 Okay, -70 Poor, -80 Very poor ("lte -80").
+                    a, b = (float(x) for x in value.split("_to_"))
+                    near, far = (a, b) if abs(a) <= abs(b) else (b, a)
+                    lo, hi = sorted((near, far))
+                    inside = (lo < float(current) <= hi) if far == lo else (lo <= float(current) < hi)
+                    return weight if inside else None
                 elif isinstance(value, list) and len(value) == 2:
                     return weight if float(value[0]) <= float(current) <= float(value[1]) else None
         except (ValueError, TypeError):
@@ -119,11 +135,12 @@ class KnowledgeRetriever:
 
         flat.update({
             # Device Health
-            "power_mode":                dh.get("power_mode", "wired"),
+            "power_mode":                dh.get("power_mode"),  # None when not reported; never assumed
             "rssi_dbm":                  dh.get("rssi"),
             "battery_percentage":        dh.get("battery_percentage"),
             "battery_saver_low_voltage": dh.get("battery_saver_low_voltage"),
             "transformer_voltage_vac":   dh.get("transformer_voltage_vac"),
+            "chime_type_setting":        dh.get("chime_type_setting"),
             "device_transmit_speed_mbps":dh.get("device_transmit_speed_mbps"),
             "internet_upload_speed_mbps":dh.get("internet_upload_speed_mbps"),
             "device_online":             dh.get("online"),
@@ -231,8 +248,9 @@ class KnowledgeRetriever:
             return []
 
         # 2. Video metrics (OpenCV)
-        fps             = diagnostic_report.get("fps", 30.0)
-        bitrate         = diagnostic_report.get("bitrate_kbps", 500.0)
+        # Absent or None means not measured: it adds no evidence (never a default healthy value).
+        fps             = diagnostic_report.get("fps")
+        bitrate         = diagnostic_report.get("bitrate_kbps")
         sharpness       = diagnostic_report.get("sharpness_score", 100.0)
         mean_brightness = diagnostic_report.get("mean_brightness", 128.0)
         black_ratio     = diagnostic_report.get("black_pixel_ratio", 0.0)
@@ -243,7 +261,8 @@ class KnowledgeRetriever:
         if telemetry:
             tel_flat = self._flatten_telemetry(telemetry)
 
-        scenario = (telemetry or {}).get("scenario", "")
+        # The telemetry "scenario" is a Digital Twin label (or "partner_status"), not a measurement:
+        # it never scores an article. Twin scenarios are reproduced through their metric values.
 
         # 4. Official signals evaluation per article
         for article in self.kb_data:
@@ -268,22 +287,24 @@ class KnowledgeRetriever:
 
             # Network-related
             if cat == "network":
-                rssi = tel_flat.get("rssi_dbm", 0) or 0
-                if rssi <= self.RSSI_POOR:
+                rssi = tel_flat.get("rssi_dbm")
+                if rssi is None:
+                    pass  # unmeasured RSSI adds no evidence
+                elif rssi <= self.RSSI_POOR:
                     video_score += 0.9
                 elif rssi <= self.RSSI_OKAY:
                     video_score += 0.5
                 elif rssi <= self.RSSI_GREAT:
                     video_score += 0.2
-                if scenario in ("wifi_degradation", "packet_loss_high"):
-                    video_score += 0.5
 
             # Video quality & optics
             elif cat in ("video", "video_optics"):
-                if diagnostic_report.get("status") != "STANDBY":
-                    if sharpness < 20 or mean_brightness < 15 or black_ratio > 0.8:
+                # No frame analyzed (standby, or unavailable): there are no video metrics to score.
+                if diagnostic_report.get("status") not in ("STANDBY", "UNAVAILABLE"):
+                    low_sharpness = sharpness is not None and sharpness < MIN_SHARPNESS_SCORE
+                    if low_sharpness or mean_brightness < 15 or black_ratio > 0.8:
                         video_score += 0.6
-                    if bitrate < 150 or fps < 15:
+                    if (bitrate is not None and bitrate < 150) or (fps is not None and fps < 15):
                         video_score += 0.4
                     if any(kw in issues_text for kw in ("blur", "blurry", "dark", "black", "pixel", "banding", "flicker")):
                         video_score += 0.6
@@ -295,27 +316,22 @@ class KnowledgeRetriever:
                 dev_online = tel_flat.get("device_online")
                 if dev_online is False:
                     video_score += 1.0
-                elif scenario in ("live_view_timeout",):
-                    video_score += 0.7
 
             # Power
             elif cat == "power":
-                power_mode = tel_flat.get("power_mode", "wired")
-                batt = tel_flat.get("battery_percentage", 100) or 100
+                power_mode = tel_flat.get("power_mode")
+                batt = tel_flat.get("battery_percentage")
                 trans_v = tel_flat.get("transformer_voltage_vac")
-                if power_mode == "wired" and trans_v is not None and trans_v < 14:
+                # A measured transformer voltage is itself evidence of a wired install.
+                if power_mode != "battery" and trans_v is not None and trans_v < self.TRANSFORMER_MIN_VAC:
                     video_score += 1.0
-                if batt < 10:
+                if batt is not None and batt < 10:
                     video_score += 0.9
-                elif batt < 20:
+                elif batt is not None and batt < 20:
                     video_score += 0.5
-                if scenario in ("power_issue", "cold_battery_drain"):
-                    video_score += 0.6
 
             # Motion & Notifications
             elif cat == "motion_and_notifications":
-                if scenario in ("motion_delayed",):
-                    video_score += 0.8
                 if any(kw in issues_text for kw in ("motion", "pir", "detection")):
                     video_score += 0.4
 
@@ -323,13 +339,11 @@ class KnowledgeRetriever:
             elif cat == "audio":
                 if any(kw in issues_text for kw in ("audio", "echo", "microphone", "sound", "mic", "two-way")):
                     video_score += 0.7
-                if scenario in ("audio_delay_jitter",):
-                    video_score += 0.7
 
             combined = max(signal_score, video_score)
 
             for kw in article.get("retrieval_keywords", []):
-                if kw.lower() in issues_text or kw.lower() in scenario:
+                if kw.lower() in issues_text:
                     combined = min(1.0, combined + 0.15)
                     break
 

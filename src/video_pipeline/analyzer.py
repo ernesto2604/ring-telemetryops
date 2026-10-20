@@ -12,6 +12,22 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+# Local heuristic of this project, not a Ring specification. Laplacian variance depends on
+# resolution (downscaling raises it), so both analysis paths measure at the same width and
+# share one threshold. Calibrated on data/samples/good_internet.mp4 (720 px: sharp frames
+# 235-274, simulator Dirty Lens 12-16); see README "Sharpness threshold".
+SHARPNESS_ANALYSIS_WIDTH = 720
+MIN_SHARPNESS_SCORE = 40.0
+
+
+def sharpness_score(gray: np.ndarray) -> float:
+    """Laplacian variance of a grayscale frame, downscaled to SHARPNESS_ANALYSIS_WIDTH if wider."""
+    h, w = gray.shape[:2]
+    if w > SHARPNESS_ANALYSIS_WIDTH:
+        new_h = int(h * SHARPNESS_ANALYSIS_WIDTH / w)
+        gray = cv2.resize(gray, (SHARPNESS_ANALYSIS_WIDTH, new_h), interpolation=cv2.INTER_AREA)
+    return round(float(cv2.Laplacian(gray, cv2.CV_64F).var()), 2)
+
 
 class VideoAnalyzer:
     def __init__(self, video_path: str):
@@ -128,6 +144,9 @@ class VideoAnalyzer:
         if frame is None:
             raise ValueError("Could not decode Base64 frame")
 
+        # Measured before the max_width resize so the score does not depend on the caller's max_width.
+        laplacian_var = sharpness_score(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+
         h, w = frame.shape[:2]
         if w > max_width:
             scale = max_width / w
@@ -136,7 +155,6 @@ class VideoAnalyzer:
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         brightness = float(np.mean(gray))
-        laplacian_var = round(float(cv2.Laplacian(gray, cv2.CV_64F).var()), 2)
 
         # BGR color channels
         b_mean = float(np.mean(frame[:, :, 0]))
@@ -146,6 +164,8 @@ class VideoAnalyzer:
         issues = []
         status = "OPTIMAL"
 
+        # The black-frame (4.0), magenta-tint (1.35 / 1.15) and banding (4.5) limits below are local
+        # heuristics checked only on a few synthetic frames: they are not calibrated and not Ring specs.
         # Black frame / complete power loss / 0 VAC
         if brightness < 4.0:
             issues.append("Completely black screen / no optical signal (0 lux, power loss or sensor offline)")
@@ -158,8 +178,8 @@ class VideoAnalyzer:
                 status = "DEGRADED"
 
             # Optical blur / dirty or obstructed lens
-            if laplacian_var < 15.0:
-                issues.append(f"Deficient sharpness / optical blur or obstructed lens (Laplacian score {laplacian_var} < 20.0)")
+            if laplacian_var < MIN_SHARPNESS_SCORE:
+                issues.append(f"Deficient sharpness / optical blur or obstructed lens (Laplacian score {laplacian_var} < {MIN_SHARPNESS_SCORE})")
                 status = "DEGRADED"
 
             # Mathematical detection of horizontal rolling shutter banding (50Hz/60Hz AC light interference)
@@ -173,23 +193,25 @@ class VideoAnalyzer:
 
         # WebRTC metrics correlation if telemetry is attached
         rtp = (telemetry or {}).get("webrtc_stats", {}).get("inbound_rtp", {})
-        fps = float(rtp.get("frames_per_second", 30.0))
-        bitrate = float(rtp.get("bitrate_kbps", 1200.0))
+        fps_value = rtp.get("frames_per_second")
+        bitrate_value = rtp.get("bitrate_kbps")
+        fps = float(fps_value) if fps_value is not None else None
+        bitrate = float(bitrate_value) if bitrate_value is not None else None
 
-        if fps < 20.0 and status != "CRITICAL":
+        if fps is not None and fps < 20.0 and status != "CRITICAL":
             issues.append(f"Deficient frame rate ({fps} fps < 20 fps)")
             status = "DEGRADED"
-        if bitrate < 150.0 and status != "CRITICAL":
+        if bitrate is not None and bitrate < 150.0 and status != "CRITICAL":
             issues.append(f"Critically low bitrate ({bitrate} kbps)")
             status = "DEGRADED"
 
         metrics = {
             "file": "live_canvas_stream",
             "resolution": f"{w}x{h}",
-            "fps": round(fps, 2),
+            "fps": round(fps, 2) if fps is not None else None,
             "frame_count": 1,
             "duration_seconds": 1.0,
-            "bitrate_kbps": round(bitrate, 2),
+            "bitrate_kbps": round(bitrate, 2) if bitrate is not None else None,
             "sharpness_score": laplacian_var,
             "mean_brightness": round(brightness, 2),
             "optical_banding_score": round(row_diff_std, 2) if 'row_diff_std' in locals() else 0.0,
@@ -227,9 +249,7 @@ class VideoAnalyzer:
 
             frames_read += 1
             if frames_read % 5 == 0:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                blur_scores.append(laplacian_var)
+                blur_scores.append(sharpness_score(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
 
         cap.release()
 
@@ -244,8 +264,8 @@ class VideoAnalyzer:
             issues.append(f"Deficient frame rate ({fps} fps < 20 fps)")
         if bitrate_kbps < 150.0:
             issues.append(f"Critically low bitrate ({bitrate_kbps} kbps)")
-        if avg_blur < 20.0:
-            issues.append(f"Deficient sharpness or obstructed lens (Laplacian score: {avg_blur} < 20.0)")
+        if avg_blur < MIN_SHARPNESS_SCORE:
+            issues.append(f"Deficient sharpness / optical blur or obstructed lens (Laplacian score: {avg_blur} < {MIN_SHARPNESS_SCORE})")
 
         status = "OPTIMAL" if not issues else "DEGRADED"
 
