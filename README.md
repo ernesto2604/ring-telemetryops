@@ -298,7 +298,7 @@ ring-telemetryops/
 │   ├── knowledge_base/
 │   │   └── ring_video_troubleshooting.json   # 15 Ring-informed troubleshooting articles
 │   └── samples/
-│       ├── good_internet.mp4                 # 1080p 30fps baseline test stream
+│       ├── good_internet.mp4                 # 1080p 25fps baseline test stream
 │       ├── bad_internet.mp4                  # Degraded low-bitrate test stream
 │       └── optical_obstruction.mp4           # Obstructed-lens test stream
 ├── src/
