@@ -7,6 +7,9 @@ Endpoints:
   GET  /                        → Serves the Web UI (web/index.html)
   GET  /api/scenarios           → List of predefined telemetry scenarios & descriptions
   GET  /api/kb                  → Ring-informed troubleshooting articles
+  GET  /api/thresholds          → Severity table (GREEN / DEGRADED / CRITICAL per metric; project heuristics)
+  GET  /api/engine              → Reasoning engine status (Bedrock model, whether AWS credentials are available)
+  GET  /favicon.ico             → Page icon (SVG)
   GET  /api/ring/status         → Ring data source and mode (MOCK / LIVE / ERROR)
   GET  /api/ring/devices        → Ring Partner API devices (RING_DATA_SOURCE=partner)
   GET  /api/ring/telemetry      → Ring Partner API device status as telemetry (no video / WebRTC data)
@@ -51,7 +54,8 @@ from src.utils.ring_partner_client import (
     RingTimeoutError,
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
-from src.agent.concierge import SupportConcierge
+from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
+from src.config import severity
 
 logger = logging.getLogger(__name__)
 
@@ -411,6 +415,28 @@ async def get_kb_articles():
     from src.agent.knowledge_retriever import KnowledgeRetriever
     retriever = KnowledgeRetriever()
     return {"articles": retriever.kb_data}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(str(WEB_DIR / "favicon.svg"), media_type="image/svg+xml")
+
+
+@app.get("/api/engine")
+async def get_engine():
+    """Which engine diagnoses anomalies: Bedrock when AWS credentials resolve, else the local fallback mock-up."""
+    return {
+        "primary": "bedrock",
+        "model": SupportConcierge.default_model_id(),
+        "credentials_configured": bedrock_credentials_configured(),
+        "fallback": "local_fallback",
+    }
+
+
+@app.get("/api/thresholds")
+async def get_thresholds():
+    """The severity table the backend uses; the web UI reads its levels from here (no copies)."""
+    return severity.TABLE
 
 
 @app.get("/api/samples")

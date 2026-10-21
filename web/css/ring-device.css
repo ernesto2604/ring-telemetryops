@@ -490,3 +490,8 @@
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Normal conditions (night mode) are kept apart from the fault injection buttons */
+.hw-title-normal {
+  margin-top: 0.7rem;
+}

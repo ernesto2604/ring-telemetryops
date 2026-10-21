@@ -244,8 +244,12 @@ def test_simulated_wifi_degradation_fallback_is_unchanged(concierge):
     assert result["_provider"] == "local_fallback"
     assert diag["diagnostic_status"] == "DEGRADED"
     assert diag["root_cause_domain"] == "NETWORK"
-    assert diag["telemetry_findings"][0] == "Wi-Fi RSSI is weak at -84 dBm."
-    assert "packet loss" in diag["telemetry_findings"][1]
+    # Every anomaly is listed (S1-7), each with its band from the severity table.
+    findings = diag["telemetry_findings"]
+    assert findings[0].startswith("Wi-Fi signal (RSSI) is -84 dBm (Poor: < -75 dBm, DEGRADED")
+    assert any(f.startswith("Packet loss is 18%") for f in findings)
+    assert any(f.startswith("Jitter is 85 ms") for f in findings)
+    assert any(f.startswith("Frame rate is 15 FPS") for f in findings)
 
 
 # ---------------------------------------------------------------------------

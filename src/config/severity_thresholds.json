@@ -1,0 +1,103 @@
+{
+  "_comment": "Single source of the diagnostic severity levels. Project heuristics, not Ring specifications: Ring's developer documentation defines no battery, Wi-Fi, transport or voltage thresholds. Loaded by src/config/severity.py (backend, KB retriever, video analyzer), served at GET /api/thresholds (web UI) and read by the tests. Bands are checked in order; the first band whose condition holds sets the level, otherwise the metric is GREEN. Operators: lt (<), lte (<=), gt (>), gte (>=). 'when' / 'unless' compare against the device context (power_mode, chime_type).",
+  "provenance": "project heuristic, not a Ring requirement",
+  "levels": ["GREEN", "DEGRADED", "CRITICAL"],
+  "heartbeat": {
+    "period_seconds": 15,
+    "degraded_pulses": 3
+  },
+  "metrics": {
+    "transformer": {
+      "label": "Transformer voltage (wired)",
+      "unit": "V AC",
+      "domain": "HARDWARE_POWER",
+      "unless": {"power_mode": "battery"},
+      "green_label": "OK",
+      "bands": [
+        {"level": "CRITICAL", "op": "lte", "value": 0.5, "label": "No power", "reason": "Transformer power cut"},
+        {"level": "DEGRADED", "op": "lt", "value": 12.0, "label": "Undervoltage", "reason": "Transformer undervoltage"}
+      ]
+    },
+    "mechanical_chime": {
+      "label": "Transformer voltage for a mechanical in-home chime",
+      "unit": "V AC",
+      "value_key": "transformer",
+      "domain": "HARDWARE_POWER",
+      "when": {"chime_type": "mechanical"},
+      "unless": {"power_mode": "battery"},
+      "green_label": "OK",
+      "bands": [
+        {"level": "DEGRADED", "op": "lt", "value": 16.0, "label": "Too low for the mechanical chime", "reason": "Transformer voltage too low for a mechanical chime"}
+      ]
+    },
+    "battery": {
+      "label": "Battery",
+      "unit": "%",
+      "domain": "HARDWARE_POWER",
+      "green_label": "OK",
+      "bands": [
+        {"level": "CRITICAL", "op": "lt", "value": 10, "label": "Critical", "reason": "Critical battery level"},
+        {"level": "DEGRADED", "op": "lt", "value": 30, "label": "Low", "reason": "Low battery level", "when": {"power_mode": "battery"}}
+      ]
+    },
+    "rssi": {
+      "label": "Wi-Fi signal (RSSI)",
+      "unit": "dBm",
+      "domain": "NETWORK",
+      "green_label": "Excellent",
+      "bands": [
+        {"level": "CRITICAL", "op": "lt", "value": -88, "label": "Critical", "reason": "Critical Wi-Fi signal"},
+        {"level": "DEGRADED", "op": "lt", "value": -75, "label": "Poor", "reason": "Poor Wi-Fi signal"},
+        {"level": "DEGRADED", "op": "lt", "value": -60, "label": "Weak", "reason": "Weak Wi-Fi signal"}
+      ]
+    },
+    "packet_loss_pct": {
+      "label": "Packet loss",
+      "unit": "%",
+      "domain": "NETWORK",
+      "green_label": "OK",
+      "bands": [
+        {"level": "DEGRADED", "op": "gt", "value": 8.0, "label": "High", "reason": "High packet loss"}
+      ]
+    },
+    "jitter_ms": {
+      "label": "Jitter",
+      "unit": "ms",
+      "domain": "NETWORK",
+      "green_label": "OK",
+      "bands": [
+        {"level": "DEGRADED", "op": "gt", "value": 40.0, "label": "High", "reason": "High jitter"}
+      ]
+    },
+    "fps": {
+      "label": "Frame rate",
+      "unit": "FPS",
+      "domain": "NETWORK",
+      "green_label": "OK",
+      "bands": [
+        {"level": "DEGRADED", "op": "lt", "value": 20.0, "label": "Low", "reason": "Low frame rate"}
+      ]
+    },
+    "bitrate": {
+      "label": "Bitrate",
+      "unit": "kbps",
+      "domain": "NETWORK",
+      "green_label": "OK",
+      "bands": [
+        {"level": "DEGRADED", "op": "lt", "value": 150.0, "label": "Low", "reason": "Low bitrate"}
+      ]
+    }
+  },
+  "domain_labels": {
+    "NETWORK": "Network Issue (Wi-Fi / Upstream)",
+    "NETWORK_WEBRTC": "Live View Connection Issue",
+    "HARDWARE_POWER": "Power Supply Issue",
+    "ENVIRONMENT_POWER": "Battery Charging Issue (Temperature or Solar)",
+    "OPTICAL_PHYSICAL": "Camera Image Issue",
+    "VIDEO_OPTICS": "Camera Image Issue",
+    "AUDIO_NETWORK": "Two-Way Audio Issue",
+    "ALGORITHM_CONFIGURATION": "Motion Detection Setup Issue",
+    "NONE": "No Issue Detected",
+    "UNKNOWN": "Undetermined (not enough measured data)"
+  }
+}

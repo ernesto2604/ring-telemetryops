@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.video_pipeline.analyzer import MIN_SHARPNESS_SCORE
+from src.config import severity
+from src.video_pipeline.analyzer import MIN_SHARPNESS_SCORE, STREAM_MIN_BITRATE_KBPS, STREAM_MIN_FPS
 
 
 class KnowledgeRetriever:
@@ -53,9 +54,11 @@ class KnowledgeRetriever:
     UL_GOOD    = 10    # Mbps internet upload  — GOOD
     UL_OKAY    = 5     # Mbps internet upload  — OKAY boundary
 
-    # Project heuristic, same value as concierge.TRANSFORMER_MIN_VAC (not imported: concierge
-    # imports this module). Parity: tests/test_voltage_retrieval.py.
-    TRANSFORMER_MIN_VAC = 12.0
+    # Project heuristics from the severity table (src/config/severity_thresholds.json), the same
+    # values the pre-check uses.
+    TRANSFORMER_MIN_VAC = severity.limit("transformer", "Undervoltage")
+    BATTERY_CRITICAL_PCT = severity.limit("battery", "Critical")
+    BATTERY_LOW_PCT = severity.limit("battery", "Low")
 
     def __init__(self, kb_path: str = "data/knowledge_base/ring_video_troubleshooting.json"):
         self.kb_path = Path(kb_path)
@@ -304,7 +307,7 @@ class KnowledgeRetriever:
                     low_sharpness = sharpness is not None and sharpness < MIN_SHARPNESS_SCORE
                     if low_sharpness or mean_brightness < 15 or black_ratio > 0.8:
                         video_score += 0.6
-                    if (bitrate is not None and bitrate < 150) or (fps is not None and fps < 15):
+                    if (bitrate is not None and bitrate < STREAM_MIN_BITRATE_KBPS) or (fps is not None and fps < STREAM_MIN_FPS):
                         video_score += 0.4
                     if any(kw in issues_text for kw in ("blur", "blurry", "dark", "black", "pixel", "banding", "flicker")):
                         video_score += 0.6
@@ -325,9 +328,9 @@ class KnowledgeRetriever:
                 # A measured transformer voltage is itself evidence of a wired install.
                 if power_mode != "battery" and trans_v is not None and trans_v < self.TRANSFORMER_MIN_VAC:
                     video_score += 1.0
-                if batt is not None and batt < 10:
+                if batt is not None and batt < self.BATTERY_CRITICAL_PCT:
                     video_score += 0.9
-                elif batt is not None and batt < 20:
+                elif batt is not None and batt < self.BATTERY_LOW_PCT:
                     video_score += 0.5
 
             # Motion & Notifications

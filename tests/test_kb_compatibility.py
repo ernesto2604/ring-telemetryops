@@ -61,12 +61,13 @@ def tel(**device_health):
 @pytest.mark.parametrize("telemetry, reason", [
     (tel(battery_percentage=5), "Critical battery level"),
     (tel(transformer_voltage_vac=10.0), "Transformer undervoltage"),
-    (tel(rssi=-90), "Degraded network metrics"),
+    (tel(rssi=-90), "Critical Wi-Fi signal"),
+    (tel(rssi=-80), "Poor Wi-Fi signal"),
     (tel(online=False), "Device reported offline"),
     (tel(transformer_voltage_vac=13.5, chime_type_setting="mechanical"),
      "Transformer voltage too low for a mechanical chime"),
 ])
 def test_precheck_result_shape_and_reasons(telemetry, reason):
     anomaly = SupportConcierge()._precheck_anomaly(VIDEO, telemetry, True)
-    assert set(anomaly) == {"domain", "reason"}
+    assert set(anomaly) == {"domain", "reason", "level", "anomalies"}
     assert anomaly["reason"] == reason

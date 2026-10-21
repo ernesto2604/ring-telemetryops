@@ -9,6 +9,8 @@ import vm from 'node:vm';
 const ROOT = new URL('../../', import.meta.url);
 const SOURCES = ['web/js/chime-audio.js', 'web/js/canvas-engine.js', 'web/js/telemetry.js', 'web/js/app.js']
   .map(p => readFileSync(new URL(p, ROOT), 'utf8'));
+// The single severity table the server returns at GET /api/thresholds (no copy in the tests either).
+const SEVERITY_TABLE = JSON.parse(readFileSync(new URL('src/config/severity_thresholds.json', ROOT), 'utf8'));
 
 class FakeElement {
   constructor(id = '') {
@@ -34,7 +36,7 @@ class FakeElement {
 }
 
 /** Builds an isolated page: `routes` maps URL -> {status, body}; returns helpers. */
-function loadPage(routes = {}, { simulatorReady = true } = {}) {
+function loadPage(routes = {}, { simulatorReady = true, severity = true } = {}) {
   const elements = new Map();
   const requests = [];
   const toasts = [];
@@ -59,6 +61,11 @@ function loadPage(routes = {}, { simulatorReady = true } = {}) {
     },
     createElement: () => new FakeElement(),
   };
+  routes = {
+    '/api/thresholds': { status: 200, body: SEVERITY_TABLE },
+    '/api/engine': { status: 200, body: { primary: 'bedrock', credentials_configured: true } },
+    ...routes,
+  };
   const fetch = async (url, options = {}) => {
     requests.push({ url, body: options.body ? JSON.parse(options.body) : null });
     // A route function may return a promise, to hold a response until the test releases it.
@@ -80,7 +87,8 @@ function loadPage(routes = {}, { simulatorReady = true } = {}) {
   for (const src of SOURCES) vm.runInContext(src, context);
   // Capture toasts without touching the fake DOM timers.
   vm.runInContext('showToast = (msg, type) => __toasts.push({ msg, type });', Object.assign(context, { __toasts: toasts }));
-  // Most tests start from a page whose /api/ring/status already reported the simulator.
+  // Most tests start from a page whose /api/thresholds and /api/ring/status already answered.
+  if (severity) vm.runInContext(`applySeverityTable(${JSON.stringify(SEVERITY_TABLE)});`, context);
   if (simulatorReady) vm.runInContext("state.ringMode = 'MOCK';", context);
   const run = code => vm.runInContext(code, context);
   return { run, el: byId, requests, toasts };
@@ -625,7 +633,7 @@ test('Push banner renders model output as text, not HTML (RING-016)', () => {
 
   const meta = page.el('app-push-meta');
   assert.equal(meta.innerHTML, '');
-  assert.equal(meta.children[0].textContent, 'Domain: <img src=x onerror=alert(1)>');
+  assert.equal(meta.children[0].textContent, 'DEGRADED • <img src=x onerror=alert(1)>');
 });
 
 const PLAYGROUND_TELEMETRY = {
@@ -963,48 +971,63 @@ test('Partner polls never clear or mark a manual Partner report (B1)', async () 
 
 test('The visible counter never exceeds 3/3 and a sustained anomaly is diagnosed once (B2)', async () => {
   const page = twinPage();
-  page.run('state.rssi = -90;');
+  page.run('state.rssi = -80;');                       // Poor Wi-Fi: DEGRADED
 
   for (let i = 0; i < 5; i++) await page.pulse();
 
-  assert.equal(page.counter(), '3/3 heartbeats [Wi-Fi]');
+  assert.equal(page.counter(), '3/3 heartbeats [Network · Degraded]');
   assert.equal(page.run('state.anomalyConsecutiveCount'), 3);
   assert.equal(page.analyzeCount(), 1);
 });
 
-test('A different reason in the same domain restarts the count (B2)', async () => {
+test('A different metric in the same family continues the incident (A2)', async () => {
   const page = twinPage();
-  page.run('state.rssi = -90;');                       // Weak Wi-Fi signal
+  page.run('state.rssi = -70;');                       // Weak Wi-Fi signal
   await page.pulse(); await page.pulse();
-  assert.equal(page.counter(), '2/3 heartbeats [Wi-Fi]');
+  assert.equal(page.counter(), '2/3 heartbeats [Network · Degraded]');
 
-  page.run('state.rssi = -48; state.loss = 20;');      // Degraded IP link (same NETWORK domain)
+  page.run('state.rssi = -48; state.loss = 20;');      // High packet loss: same NETWORK family
   await page.pulse();
 
-  assert.equal(page.counter(), '1/3 heartbeats [Wi-Fi]');
+  assert.equal(page.counter(), '3/3 heartbeats [Network · Degraded]');
+  assert.equal(page.analyzeCount(), 1);
+});
+
+test('A new problem family restarts the count (A2)', async () => {
+  const page = twinPage();
+  page.run('state.rssi = -70;');
+  await page.pulse(); await page.pulse();
+
+  page.run("state.rssi = -48; state.powerMode = 'battery'; state.battery = 20;");   // Low battery: power family
+  await page.pulse();
+
+  assert.equal(page.counter(), '1/3 heartbeats [Power · Degraded]');
   assert.equal(page.analyzeCount(), 0);
 });
 
-test('Battery recovering from 3% to 12% resolves the incident; a new drop below 10% is a new one (B2/B3)', async () => {
+test('Battery-only from 3% to 35% resolves the incident; 3% to 12% keeps it open (B2/D4)', async () => {
   const page = twinPage();
-  page.run("state.powerMode = 'battery'; state.battery = 3;");   // below 10 %: immediate
+  page.run("state.powerMode = 'battery'; state.battery = 3;");   // below 10 %: CRITICAL, immediate
   await page.pulse();
-  assert.equal(page.counter(), '3/3 heartbeats [Power]');
+  assert.equal(page.counter(), '3/3 heartbeats [Power · Critical]');
   assert.equal(page.analyzeCount(), 1);
 
-  page.run('state.battery = 12;');                                // 12 % is not an anomaly
+  page.run('state.battery = 12;');                                // Low (DEGRADED): still an incident
   for (let i = 0; i < 3; i++) await page.pulse();
+  assert.equal(page.analyzeCount(), 1);                           // no new diagnosis on the way down
+  assert.equal(page.bannerShown(), true);
+  assert.notEqual(page.el('diag-resolved-note').style.display, '');
+
+  page.run('state.battery = 35;');                                // GREEN: resolved
+  await page.pulse();
   assert.equal(page.counter(), '0/3 heartbeats');
-  assert.equal(page.analyzeCount(), 1);
   assert.equal(page.bannerShown(), false);
   assert.equal(page.el('diag-resolved-note').style.display, '');
 
   page.run('state.battery = 8;');                                 // new incident
   await page.pulse();
-  assert.equal(page.counter(), '3/3 heartbeats [Power]');
   assert.equal(page.analyzeCount(), 2);
   assert.equal(page.bannerShown(), true);
-  assert.notEqual(page.el('diag-resolved-note').style.display, '');
 });
 
 test('A recurring anomaly is diagnosed again after recovery when the first analysis was skipped (B2)', async () => {
@@ -1145,34 +1168,71 @@ test('Non-Twin modes never start a fake camera stream (RING-013)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// B3: battery-only alert threshold (same value as the backend's BATTERY_CRITICAL_PCT)
+// B3 / O1: battery-only bands from the severity table (critical < 10 %, low < 30 %)
 // ---------------------------------------------------------------------------
 
-for (const [battery, immediate] of [[9, true], [10, false], [11, false], [12, false], [15, false]]) {
-  test(`Battery-only at ${battery}% ${immediate ? 'alerts on the first pulse' : 'is never an anomaly'} (B3)`, async () => {
+for (const [battery, level] of [[9, 'CRITICAL'], [10, 'DEGRADED'], [11, 'DEGRADED'], [15, 'DEGRADED'], [29, 'DEGRADED'], [30, null]]) {
+  test(`Battery-only at ${battery}% is ${level || 'GREEN'} (B3/O1)`, async () => {
     const page = twinPage();
     page.run(`state.powerMode = 'battery'; state.battery = ${battery};`);
 
-    assert.equal(page.run('getHeartbeatAnomaly()?.isCriticalImmediate === true'), immediate);
-    if (!immediate) assert.equal(page.run('getHeartbeatAnomaly()'), null);
-    for (let i = 0; i < 3; i++) await page.pulse();
-    assert.equal(page.analyzeCount(), immediate ? 1 : 0);
+    assert.equal(page.run('getHeartbeatAnomaly()?.level ?? null'), level);
+    await page.pulse();
+    assert.equal(page.analyzeCount(), level === 'CRITICAL' ? 1 : 0);   // critical: first pulse
+    await page.pulse(); await page.pulse();
+    assert.equal(page.analyzeCount(), level ? 1 : 0);                   // degraded: third pulse
   });
 }
 
-test('Badge colour bands stay display-only and do not become heartbeat rules (B3)', () => {
+// A5: every yellow or red indicator is a level that counts; the band name is always written.
+for (const [setup, badgeId, text, cls, level] of [
+  ['state.rssi = -60;', 'badge-wifi', '📶 Wi-Fi Excellent', 'badge badge-green', null],
+  ['state.rssi = -61;', 'badge-wifi', '📶 Wi-Fi Weak', 'badge badge-yellow', 'DEGRADED'],
+  ['state.rssi = -75;', 'badge-wifi', '📶 Wi-Fi Weak', 'badge badge-yellow', 'DEGRADED'],
+  ['state.rssi = -76;', 'badge-wifi', '📶 Wi-Fi Poor', 'badge badge-yellow', 'DEGRADED'],
+  ['state.rssi = -88;', 'badge-wifi', '📶 Wi-Fi Poor', 'badge badge-yellow', 'DEGRADED'],
+  ['state.rssi = -89;', 'badge-wifi', '📶 Wi-Fi Critical', 'badge badge-red', 'CRITICAL'],
+  ["state.powerMode = 'battery'; state.battery = 30;", 'badge-battery', '🔋 30% (Battery)', 'badge badge-green', null],
+  ["state.powerMode = 'battery'; state.battery = 29;", 'badge-battery', '🔋 29% (Low)', 'badge badge-yellow', 'DEGRADED'],
+  ["state.powerMode = 'battery'; state.battery = 10;", 'badge-battery', '🔋 10% (Low)', 'badge badge-yellow', 'DEGRADED'],
+  ["state.powerMode = 'battery'; state.battery = 9;", 'badge-battery', '🪫 9% (Critical)', 'badge badge-red', 'CRITICAL'],
+  ['state.transformer = 12;', 'badge-battery', '⚡ 12.0V (Hardwired)', 'badge badge-green', null],
+  ['state.transformer = 11.5;', 'badge-battery', '⚡ Undervoltage (11.5V)', 'badge badge-yellow', 'DEGRADED'],
+  ['state.transformer = 1;', 'badge-battery', '⚡ Undervoltage (1V)', 'badge badge-yellow', 'DEGRADED'],
+  ['state.transformer = 0.5;', 'badge-battery', '🪫 No power (0.5V)', 'badge badge-red', 'CRITICAL'],
+  ['state.transformer = 0;', 'badge-battery', '🪫 No power (0V)', 'badge badge-red', 'CRITICAL'],
+]) {
+  test(`Indicator and heartbeat agree at the boundary: ${setup} (A5)`, () => {
+    const page = twinPage();
+    page.run(`${setup} updateDeviceLiveBadges();`);
+
+    assert.equal(page.el(badgeId).textContent, text);
+    assert.equal(page.el(badgeId).className, cls);
+    assert.equal(page.run('getHeartbeatAnomaly()?.level ?? null'), level);
+  });
+}
+
+test('Metric cards show the band name next to the colour, from the table (A5/E10)', () => {
   const page = twinPage();
-  page.run("state.powerMode = 'battery'; state.battery = 25; state.rssi = -70; updateDeviceLiveBadges();");
+  page.run('state.rssi = -80; state.jitter = 41; state.loss = 8; updateMetricCards({ device_health: {}, webrtc_stats: {} });');
 
-  assert.equal(page.el('badge-battery').textContent, '🔋 25% (Low)');   // yellow band: 10 <= battery < 30
-  assert.equal(page.el('badge-wifi').textContent, '📶 Wi-Fi Weak');     // yellow band: -75 <= rssi < -60
-  assert.equal(page.run('getHeartbeatAnomaly()'), null);
-
-  page.run('state.battery = 9; updateDeviceLiveBadges();');
-  assert.equal(page.el('badge-battery').textContent, '🪫 9% (Critical)'); // red band unchanged: < 10
+  assert.equal(page.el('m-rssi').className, 'metric-value metric-fair');
+  assert.equal(page.el('m-rssi-level').textContent, 'Poor · Degraded');
+  assert.equal(page.el('m-jitter-level').textContent, 'High · Degraded');
+  assert.equal(page.el('m-loss').className, 'metric-value metric-good');    // 8 % is not above 8 %
+  assert.equal(page.el('m-loss-level').textContent, 'OK');
 });
 
-// ---------------------------------------------------------------------------
+test('Without the severity table nothing is classified and the Twin stays disabled', async () => {
+  const page = loadPage({ '/api/thresholds': { status: 500, body: {} } }, { simulatorReady: false, severity: false });
+
+  await page.run('checkServer()');
+
+  assert.equal(page.run('state.ringMode'), 'ERROR');
+  assert.equal(page.run('getHeartbeatAnomaly()'), null);
+  assert.match(page.el('server-status').textContent, /severity thresholds unavailable/);
+});
+
 // The engine label names the provider that produced the shown report
 // ---------------------------------------------------------------------------
 
@@ -1186,3 +1246,307 @@ for (const [provider, label] of [['local_fallback', 'Local fallback'], ['bedrock
     assert.match(page.el('engine-provider').textContent, new RegExp(label));
   });
 }
+
+// ---------------------------------------------------------------------------
+// Section 7.1: heartbeat sequences S1-S9 (critical = first pulse, degraded = 3 pulses)
+// ---------------------------------------------------------------------------
+
+const NETWORK_REPORT = {
+  _provider: 'bedrock',
+  severity_level: 'DEGRADED',
+  retrieved_articles: [{ id: 'KB-RING-001' }],
+  mitigation_source: 'knowledge_base',
+  telemetry: { device_id: 'a1b2c3d4e5f6', _source: 'client_supplied' },
+  diagnostic_result: {
+    diagnostic_status: 'DEGRADED', root_cause_domain: 'NETWORK', confidence_score: 0.85,
+    telemetry_findings: ['Wi-Fi signal (RSSI) is -84 dBm (Poor).'], visual_findings: [],
+    recommended_mitigation: 'Your doorbell has a weak Wi-Fi connection. Move your router closer.',
+  },
+};
+const NOMINAL_REPORT = {
+  _provider: 'precheck', analysis_skipped: true, retrieved_articles: [],
+  diagnostic_result: {
+    diagnostic_status: 'HEALTHY', root_cause_domain: 'NONE', confidence_score: 1,
+    telemetry_findings: ['All measured device and transport metrics are within the GREEN band.'],
+    visual_findings: [], recommended_mitigation: 'No action needed: your doorbell is working normally.',
+  },
+};
+
+/** Twin page that answers /api/analyze with `body` and records the analyses per pulse. */
+function seqPage(body = NETWORK_REPORT) {
+  const page = twinPage(body);
+  page.title = () => page.el('app-push-title').textContent;
+  page.pulses = async (n) => { const counts = []; for (let i = 0; i < n; i++) { await page.pulse(); counts.push(page.analyzeCount()); } return counts; };
+  return page;
+}
+
+for (const [name, rssi, reason, limit] of [['S1', -84, 'Poor Wi-Fi signal', '< -75 dBm'], ['S2', -70, 'Weak Wi-Fi signal', '< -60 dBm']]) {
+  test(`${name}: RSSI ${rssi} (degraded) counts 1/3, 2/3, 3/3 and is diagnosed on pulse 3`, async () => {
+    const page = seqPage();
+    page.run(`state.rssi = ${rssi};`);
+
+    await page.pulse(); assert.equal(page.counter(), '1/3 heartbeats [Network · Degraded]');
+    await page.pulse(); assert.equal(page.counter(), '2/3 heartbeats [Network · Degraded]');
+    assert.equal(page.analyzeCount(), 0);
+    await page.pulse(); assert.equal(page.counter(), '3/3 heartbeats [Network · Degraded]');
+
+    assert.equal(page.analyzeCount(), 1);
+    assert.equal(page.title(), `Ring Alert: ${reason} for 3 heartbeats (${limit})`);
+    assert.equal(page.el('diag-status-text').textContent, 'DEGRADED');
+  });
+}
+
+test('S3: RSSI -90 (critical) is diagnosed on the first pulse', async () => {
+  const page = seqPage({ ...NETWORK_REPORT, diagnostic_result: { ...NETWORK_REPORT.diagnostic_result, diagnostic_status: 'CRITICAL' } });
+  page.run('state.rssi = -90;');
+
+  assert.deepEqual(await page.pulses(1), [1]);
+  assert.equal(page.counter(), '3/3 heartbeats [Network · Critical]');
+  assert.equal(page.title(), 'Ring Alert: Critical Wi-Fi signal (< -88 dBm)');
+});
+
+test('S4: Battery Only 10% counts 3 pulses; 9% is diagnosed on the first pulse', async () => {
+  const low = seqPage(POWER_REPORT);
+  low.run("state.powerMode = 'battery'; state.battery = 10;");
+  assert.deepEqual(await low.pulses(3), [0, 0, 1]);
+
+  const critical = seqPage(POWER_REPORT);
+  critical.run("state.powerMode = 'battery'; state.battery = 9;");
+  assert.deepEqual(await critical.pulses(1), [1]);
+  assert.equal(critical.title(), 'Ring Alert: Critical battery level (< 10%)');
+});
+
+test('S5: wired 13 V is nominal, 11 V needs 3 pulses, 0 V is immediate', async () => {
+  const ok = seqPage(POWER_REPORT);
+  ok.run('state.transformer = 13;');
+  assert.deepEqual(await ok.pulses(3), [0, 0, 0]);
+  assert.equal(ok.counter(), '0/3 heartbeats');
+
+  const under = seqPage(POWER_REPORT);
+  under.run('state.transformer = 11;');
+  assert.deepEqual(await under.pulses(3), [0, 0, 1]);
+  assert.equal(under.title(), 'Ring Alert: Transformer undervoltage for 3 heartbeats (< 12 V AC)');
+
+  const cut = seqPage(POWER_REPORT);
+  cut.run('state.transformer = 0;');
+  assert.deepEqual(await cut.pulses(1), [1]);
+  assert.equal(cut.title(), 'Ring Alert: Transformer power cut (≤ 0.5 V AC)');
+});
+
+test('S6: RSSI -90 -> -70 keeps the incident open; -50 resolves it; Reset clears everything', async () => {
+  const page = seqPage();
+  page.run('state.rssi = -90;');
+  await page.pulse();
+  assert.equal(page.analyzeCount(), 1);
+
+  page.run('state.rssi = -70;');                      // CRITICAL -> DEGRADED: still the same incident
+  await page.pulse(); await page.pulse();
+  assert.equal(page.analyzeCount(), 1);
+  assert.equal(page.bannerShown(), true);
+  assert.notEqual(page.el('diag-resolved-note').style.display, '');
+  assert.equal(page.counter(), '3/3 heartbeats [Network · Degraded]');
+
+  page.run('state.rssi = -50;');                      // every metric GREEN: resolved
+  await page.pulse();
+  assert.equal(page.counter(), '0/3 heartbeats');
+  assert.equal(page.bannerShown(), false);
+  assert.match(page.el('diag-resolved-note').textContent, /Resolved/);
+  assert.equal(page.el('result-content').classList.contains('resolved'), true);
+
+  page.run('resetTelemetryDefaults()');
+  assert.equal(page.el('result-content').style.display, 'none');
+  assert.equal(page.counter(), '0/3 heartbeats');
+  assert.match(page.el('engine-provider').textContent, /No diagnosis yet/);
+});
+
+test('S7: an escalation from degraded (2/3) to critical is diagnosed on that pulse', async () => {
+  const page = seqPage();
+  page.run('state.rssi = -70;');
+  assert.deepEqual(await page.pulses(2), [0, 0]);
+
+  page.run('state.rssi = -90;');
+  assert.deepEqual(await page.pulses(1), [1]);
+  assert.equal(page.title(), 'Ring Alert: Critical Wi-Fi signal (< -88 dBm)');
+});
+
+test('S7b: an escalation after a degraded diagnosis is diagnosed again, a drop is not', async () => {
+  const page = seqPage();
+  page.run('state.rssi = -80;');
+  assert.deepEqual(await page.pulses(3), [0, 0, 1]);
+  page.run('state.rssi = -90;');
+  assert.deepEqual(await page.pulses(1), [2]);       // DEGRADED -> CRITICAL
+  page.run('state.rssi = -80;');
+  assert.deepEqual(await page.pulses(2), [2, 2]);    // CRITICAL -> DEGRADED: no new diagnosis
+});
+
+/** Twin page where activateCamera runs against the fake DOM and the event delay is 0 ms. */
+function triggerPage(body) {
+  const page = seqPage(body);
+  Object.assign(page.el('live-video-player'), { play: () => Promise.resolve(), pause() {} });
+  page.run(`globalThis.requestAnimationFrame = () => 0; globalThis.cancelAnimationFrame = () => {};
+            EVENT_DIAGNOSIS_DELAY_MS = 0;`);
+  return page;
+}
+
+for (const [label, call, name] of [
+  ['Ring Chime (Ding)', 'simulateDing()', 'Doorbell Press'],
+  ['PIR Motion', 'simulateMotion()', 'Motion Detection'],
+  ['Live View', 'toggleLiveView()', 'Live View'],
+]) {
+  test(`S8 / B1: ${label} with a problem is diagnosed at once, titled "Issue during ${name}"`, async () => {
+    const page = triggerPage();
+    page.run('state.rssi = -70;');
+    await page.pulse();                                // heartbeat counting 1/3
+
+    page.run(call);
+    await settle(); await settle();
+
+    const analyses = page.requests.filter(r => r.url === '/api/analyze');
+    assert.equal(analyses.length, 1);                  // immediate, without waiting for 3/3
+    assert.equal(analyses[0].body.camera_active, true);
+    assert.equal(page.title(), `Ring Alert: Issue during ${name}`);
+
+    // B3 / D10: the heartbeat reaching 3/3 does not report the same incident a second time.
+    await page.pulse(); await page.pulse();
+    assert.equal(page.analyzeCount(), 1);
+  });
+
+  test(`S9 / B2: ${label} without a problem says "All good" and calls no Bedrock`, async () => {
+    const page = triggerPage(NOMINAL_REPORT);
+
+    page.run(call);
+    await settle(); await settle();
+
+    assert.equal(page.analyzeCount(), 1);              // the backend pre-check answers; no Bedrock call
+    assert.equal(page.bannerShown(), false);
+    assert.equal(page.el('diag-status-text').textContent, 'All good');
+    assert.equal(page.el('diag-domain-text').textContent, 'No issues detected');
+    assert.ok(page.toasts.some(t => /All good/.test(t.msg)));
+    assert.match(page.el('engine-provider').textContent, /pre-check/);
+  });
+}
+
+test('B3: a Ding while the camera is starting shares one analysis (no duplicate report)', async () => {
+  const page = triggerPage();
+  page.run('state.rssi = -70; EVENT_DIAGNOSIS_DELAY_MS = 5; simulateDing(); simulateMotion();');
+  await new Promise(r => setTimeout(r, 30));
+
+  assert.equal(page.analyzeCount(), 1);
+});
+
+test('B3: a trigger after the heartbeat already reported the incident updates the report, not the alert', async () => {
+  const page = triggerPage();
+  page.run('state.rssi = -80;');
+  await page.pulses(3);
+  const title = page.title();
+
+  page.run("toggleLiveView();");
+  await settle(); await settle();
+
+  assert.equal(page.analyzeCount(), 2);                // new evidence (the frame) is analyzed
+  assert.equal(page.title(), title);                   // same incident, same notification
+});
+
+// ---------------------------------------------------------------------------
+// A4: alert titles quote the severity table, never stale numbers
+// ---------------------------------------------------------------------------
+
+test('Alert titles quote the boundaries of the severity table (A4)', async () => {
+  for (const [setup, metric, label] of [
+    ["state.powerMode = 'battery'; state.battery = 5;", 'battery', 'Critical'],
+    ["state.powerMode = 'battery'; state.battery = 20;", 'battery', 'Low'],
+    ['state.transformer = 0;', 'transformer', 'No power'],
+    ['state.transformer = 11;', 'transformer', 'Undervoltage'],
+    ['state.rssi = -95;', 'rssi', 'Critical'],
+    ['state.rssi = -80;', 'rssi', 'Poor'],
+    ['state.jitter = 90;', 'jitter_ms', 'High'],
+    ['state.fps = 10;', 'fps', 'Low'],
+  ]) {
+    const page = seqPage(POWER_REPORT);
+    page.run(setup);
+    await page.pulses(3);
+    const limit = SEVERITY_TABLE.metrics[metric].bands.find(b => b.label === label).value;
+    const numbers = (page.title().match(/-?\d+(\.\d+)?/g) || []).map(Number).filter(n => n !== 3);
+    assert.deepEqual(numbers, [limit], `${setup} -> ${page.title()}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// E: user view vs technical view, engine label, standby HUD
+// ---------------------------------------------------------------------------
+
+test('E1/E5: the user view has no device ID or findings; the technical view has them', async () => {
+  const page = seqPage();
+  page.run('state.rssi = -80;');
+  await page.pulses(3);
+
+  const userView = ['diag-status-text', 'diag-domain-text', 'mitigation-text', 'app-push-title', 'app-push-desc']
+    .map(id => page.el(id).textContent).join(' ');
+  assert.ok(!userView.includes('a1b2c3d4e5f6'));
+  assert.ok(!userView.includes('RSSI'));
+  assert.equal(page.el('diag-domain-text').textContent, 'Network Issue (Wi-Fi / Upstream)');
+  assert.equal(page.el('tech-device-id').textContent, 'a1b2c3d4e5f6');
+  assert.equal(page.el('tech-sops').textContent, 'KB-RING-001');
+  assert.equal(page.el('tech-provider').textContent, '☁️ AWS Bedrock (Claude)');
+  assert.equal(page.el('tech-mitigation-source').textContent, 'Project knowledge base (Ring-informed, unverified)');
+  assert.match(page.run('ticketText()'), /Device ID: a1b2c3d4e5f6/);
+});
+
+test('E2: the push banner shows a short line, never the full mitigation', async () => {
+  const page = seqPage();
+  page.run('state.rssi = -80;');
+  await page.pulses(3);
+
+  const desc = page.el('app-push-desc').textContent;
+  assert.ok(!desc.includes(NETWORK_REPORT.diagnostic_result.recommended_mitigation));
+  assert.ok(desc.split(/\s+/).length <= 15, desc);
+  assert.equal(page.el('mitigation-text').textContent, NETWORK_REPORT.diagnostic_result.recommended_mitigation);
+});
+
+test('E3: the engine label follows the last diagnosis and starts as "No diagnosis yet"', async () => {
+  const page = seqPage({ ...POWER_REPORT, _provider: 'local_fallback' });
+  page.run('showReportProvider(null)');
+  assert.match(page.el('engine-provider').textContent, /No diagnosis yet/);
+
+  page.run("state.powerMode = 'battery'; state.battery = 3;");
+  await page.pulse();
+  assert.equal(page.el('engine-provider').textContent, '⚙️ Local fallback (mock-up)');
+
+  page.run("showReportProvider('something_else')");
+  assert.doesNotMatch(page.el('engine-provider').textContent, /Bedrock/);
+
+  page.run('clearDiagnosticConsole()');
+  assert.match(page.el('engine-provider').textContent, /No diagnosis yet/);
+});
+
+test('E3: without AWS credentials the idle label says the local fallback is used', async () => {
+  const page = loadPage({ '/api/engine': { status: 200, body: { credentials_configured: false } } });
+  await page.run('loadEngineStatus()');
+  assert.equal(page.el('engine-provider').textContent, '⚙️ Not configured (using local fallback)');
+});
+
+test('E7: in standby the Stop button is hidden and the HUD shows no frame rate', () => {
+  const page = triggerPage();
+  page.run('deactivateCamera(); updateCanvasEffects();');
+  assert.equal(page.el('btn-stop-camera').style.display, 'none');
+  assert.equal(page.el('hud-fps-live').textContent, 'Standby');
+  assert.match(page.el('hud-cam-meta').textContent, /standby/i);
+
+  page.run("activateCamera('live', 0); clearTimeout(pendingEventDiagnosis); updateCanvasEffects();");
+  assert.equal(page.el('btn-stop-camera').style.display, '');
+  assert.equal(page.el('hud-fps-live').textContent, '30 FPS');
+});
+
+test('E8: the page declares a favicon served by the API', () => {
+  const html = readFileSync(new URL('web/index.html', ROOT), 'utf8');
+  assert.match(html, /<link rel="icon"[^>]+href="\/favicon\.ico"/);
+});
+
+test('E6: Night mode is a normal condition, outside the fault injection grid', () => {
+  const html = readFileSync(new URL('web/index.html', ROOT), 'utf8');
+  const faults = html.indexOf('Physical Fault Injection');
+  const normal = html.indexOf('Normal operating conditions');
+  const night = html.indexOf('id="hw-btn-night"');
+  assert.ok(faults < normal && normal < night);
+  assert.match(html, /Night mode \(IR LEDs\)/);
+});

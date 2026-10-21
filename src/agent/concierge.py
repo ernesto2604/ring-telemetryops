@@ -23,6 +23,7 @@ Agent Output (Strict JSON schema):
 import os
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -33,12 +34,15 @@ if str(ROOT) not in sys.path:
 
 from dotenv import load_dotenv
 
-from src.video_pipeline.analyzer import VideoAnalyzer
+from src.config import severity
+from src.video_pipeline.analyzer import VideoAnalyzer, STREAM_ISSUE_PREFIXES
 from src.agent.knowledge_retriever import KnowledgeRetriever
 from src.utils.telemetry_simulator import TelemetrySimulator
 from src.utils.ring_client import RingClient
 
 load_dotenv(ROOT / ".env")
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default Models by Provider
@@ -89,16 +93,10 @@ RESPOND ONLY with a valid, parseable JSON object in English, without markdown wr
 
 STANDBY_VISUAL_FINDING = "Camera in low-power standby mode. Optical sensor powered down by design."
 
-# Anomaly thresholds shared by the pre-check and the local fallback (same meaning, one definition).
-# Project heuristics, not Ring Partner API specifications. SYSTEM_PROMPT states the same values.
-BATTERY_CRITICAL_PCT = 10        # battery_percentage < this
-TRANSFORMER_MIN_VAC = 12.0       # transformer_voltage_vac < this (wired installs)
-MECHANICAL_CHIME_MIN_VAC = 16.0  # transformer < this, only with chime_type_setting="mechanical" (product rule)
-RSSI_DEGRADED_DBM = -75          # rssi < this
-PACKET_LOSS_DEGRADED_PCT = 8.0   # packet loss % > this
-JITTER_DEGRADED_MS = 40.0        # jitter ms > this
-STREAM_MIN_FPS = 20.0            # fps < this
-STREAM_MIN_BITRATE_KBPS = 150.0  # bitrate kbps < this
+# Severity levels come from the single table in src/config/severity_thresholds.json (project
+# heuristics, not Ring specifications); the pre-check, the local fallback and the prompt all read it.
+TRANSFORMER_MIN_VAC = severity.limit("transformer", "Undervoltage")
+MECHANICAL_CHIME_MIN_VAC = severity.limit("mechanical_chime", "Too low for the mechanical chime")
 
 
 _SOURCE_DESCRIPTIONS = {
@@ -159,29 +157,47 @@ def _telemetry_metrics(
     }
 
 
-def _network_degraded(m: Dict[str, Any]) -> bool:
-    return (
-        (m["rssi"] is not None and m["rssi"] < RSSI_DEGRADED_DBM)
-        or (m["packet_loss_pct"] is not None and m["packet_loss_pct"] > PACKET_LOSS_DEGRADED_PCT)
-        or (m["jitter_ms"] is not None and m["jitter_ms"] > JITTER_DEGRADED_MS)
-    )
+def _optical_issues(video_metrics: Dict[str, Any]) -> list[str]:
+    """Analyzer issues about the image itself (frame rate / bitrate issues are judged as stream metrics)."""
+    return [i for i in video_metrics.get("issues", []) if not i.startswith(STREAM_ISSUE_PREFIXES)]
 
 
-def _mechanical_chime_undervoltage(m: Dict[str, Any]) -> bool:
-    """Product rule: a reported mechanical in-home chime on a wired install needs >= 16 V AC."""
-    return (
-        m["chime_type"] == "mechanical"
-        and m["power_mode"] != "battery"
-        and m["transformer"] is not None
-        and m["transformer"] < MECHANICAL_CHIME_MIN_VAC
-    )
+def _assess(m: Dict[str, Any], video_metrics: Dict[str, Any], camera_active: bool) -> Dict[str, Any]:
+    """
+    Deterministic severity: every non-GREEN metric of the severity table, plus the analyzer's
+    optical verdict when a frame was analyzed. The overall level is the worst one, and the
+    dominant anomaly is the first with that level (table order: power, network, stream, then optics).
+    Unmeasured metrics never count.
+    """
+    found = severity.anomalies(severity.classify_telemetry(m))
+    for item in found:
+        item["finding"] = _finding(item)
+    if camera_active:
+        if video_metrics.get("status") == "CRITICAL":
+            found.append({"metric": "video", "level": severity.CRITICAL, "domain": "OPTICAL_PHYSICAL",
+                          "reason": "No usable optical signal",
+                          "finding": "The analyzed frame has no usable optical signal."})
+        elif _optical_issues(video_metrics):
+            found.append({"metric": "video", "level": severity.DEGRADED, "domain": "OPTICAL_PHYSICAL",
+                          "reason": "Visual quality issue detected",
+                          "finding": "The video analyzer detected visual quality issues."})
+        elif video_metrics.get("optical_banding_detected", False):
+            found.append({"metric": "video", "level": severity.DEGRADED, "domain": "OPTICAL_PHYSICAL",
+                          "reason": "Degraded optical metrics",
+                          "finding": "OpenCV detected degraded optical clarity or banding."})
+    level = severity.worst_level([item["level"] for item in found])
+    dominant = next((item for item in found if item["level"] == level), None)
+    return {"level": level, "anomalies": found, "dominant": dominant}
 
 
-def _stream_degraded(m: Dict[str, Any]) -> bool:
-    return (
-        (m["fps"] is not None and m["fps"] < STREAM_MIN_FPS)
-        or (m["bitrate"] is not None and m["bitrate"] < STREAM_MIN_BITRATE_KBPS)
-    )
+def _finding(item: Dict[str, Any]) -> str:
+    """Technician-facing finding for one table anomaly (no internal field names)."""
+    rule = severity.METRICS[item["metric"]]
+    unit = rule["unit"]
+    sep = "" if unit == "%" else " "
+    op = severity.OP_SYMBOLS[item["op"]]
+    return (f"{rule['label']} is {item['value']:g}{sep}{unit} ({item['label']}: {op} {item['limit']:g}{sep}{unit}, "
+            f"{item['level']}; project heuristic).")
 
 
 def _missing_essential_metrics(m: Dict[str, Any]) -> list[str]:
@@ -266,6 +282,83 @@ def _insufficient_data_diagnostic(missing: list[str], camera_active: bool) -> Di
     }
 
 
+# Fixed confidence of every local_fallback report (a mock-up constant, not a computed estimate).
+FALLBACK_CONFIDENCE = 0.86
+# The pre-check's nominal verdict is deterministic: every measured metric is in the GREEN band.
+PRECHECK_NOMINAL_CONFIDENCE = 1.0
+
+NOMINAL_MITIGATION = "No action needed: your doorbell is working normally."
+
+# KB issue categories that can supply the mitigation for each report domain.
+_DOMAIN_KB_CATEGORIES = {
+    "HARDWARE_POWER": ("power", "chime_hardware"),
+    "NETWORK": ("network",),
+    "OPTICAL_PHYSICAL": ("video", "video_optics"),
+}
+
+# Plain-language mitigations used only when no retrieved KB article matches (marked as generated).
+_GENERIC_MITIGATIONS = {
+    "HARDWARE_POWER": (
+        "Your doorbell is not getting the power it needs, so it may restart or miss alerts. "
+        "Please contact a qualified electrician or Ring Support to check its power supply."
+    ),
+    "NETWORK": (
+        "Your doorbell's internet connection is weak or unstable, so video may freeze or alerts may be late. "
+        "Restart your router and move it closer to the doorbell if you can, then check the connection in the Ring app."
+    ),
+    "OPTICAL_PHYSICAL": (
+        "Your doorbell camera's picture doesn't look right, which can hide details in your videos. "
+        "Gently clean the lens with a soft, dry cloth, then check the view in the Ring app."
+    ),
+}
+MITIGATION_SOURCE_KB = "knowledge_base"
+MITIGATION_SOURCE_GENERATED = "generated_no_kb_match"
+
+
+def _fallback_mitigation(dominant: Dict[str, Any], articles: list[Dict[str, Any]]) -> tuple[str, str]:
+    """
+    Plain-language mitigation for the dominant anomaly: the customer message of the first retrieved
+    KB article in the same domain (per metric when the article has one), else a generic message.
+    """
+    categories = _DOMAIN_KB_CATEGORIES.get(dominant["domain"], ())
+    for article in articles:
+        messages = article.get("customer_messages") or {}
+        if article.get("issue_category") in categories and messages:
+            text = messages.get(dominant["metric"]) or messages.get("default")
+            if text:
+                return text, MITIGATION_SOURCE_KB
+    return _GENERIC_MITIGATIONS.get(dominant["domain"], _GENERIC_MITIGATIONS["NETWORK"]), MITIGATION_SOURCE_GENERATED
+
+
+def _nominal_diagnostic(camera_active: bool) -> Dict[str, Any]:
+    """Explicit pre-check verdict when every measured metric is GREEN (no Bedrock call)."""
+    return {
+        "diagnostic_status": "HEALTHY",
+        "root_cause_domain": "NONE",
+        "confidence_score": PRECHECK_NOMINAL_CONFIDENCE,
+        "telemetry_findings": ["All measured device and transport metrics are within the GREEN band."],
+        "visual_findings": (["No optical issue detected in the analyzed frame."] if camera_active
+                            else [STANDBY_VISUAL_FINDING]),
+        "recommended_mitigation": NOMINAL_MITIGATION,
+    }
+
+
+def bedrock_credentials_configured() -> bool:
+    """
+    True when boto3 can resolve AWS credentials (explicit keys, profile, SSO cache, ...). No AWS
+    request is made and the EC2 instance-metadata lookup is skipped, so this answers instantly.
+    """
+    if os.getenv("AWS_ACCESS_KEY_ID", "").strip() and os.getenv("AWS_SECRET_ACCESS_KEY", "").strip():
+        return True
+    try:
+        import botocore.session
+        resolver = botocore.session.get_session().get_component("credential_provider")
+        resolver.remove("iam-role")
+        return resolver.load_credentials() is not None
+    except Exception:
+        return False
+
+
 class SupportConcierge:
     """
     Diagnostic Orchestrator for Ring TelemetryOps.
@@ -285,6 +378,10 @@ class SupportConcierge:
         self.model_id = (
             model_id or os.getenv("BEDROCK_MODEL_ID", BEDROCK_DEFAULT_MODEL)
         ).strip()
+
+    @staticmethod
+    def default_model_id() -> str:
+        return os.getenv("BEDROCK_MODEL_ID", BEDROCK_DEFAULT_MODEL).strip()
 
     def _get_client(self):
         """Initializes the LLM client on demand based on selected provider."""
@@ -411,98 +508,38 @@ class SupportConcierge:
         articles: list[Dict[str, Any]],
         camera_active: bool,
     ) -> Dict[str, Any]:
-        """Builds a deterministic report when Bedrock is unavailable."""
+        """
+        Deterministic report when Bedrock is unavailable or breaks the contract: a mock-up of the
+        report contract, not a reasoning engine. Same schema; severity and domain come from the
+        severity table; every detected anomaly is listed; the mitigation is the plain-language
+        message of the matching KB article (or a generic one when no article matches).
+        """
         m = _telemetry_metrics(telemetry, video_metrics, camera_active)
         if m["online"] is False:
             return _offline_diagnostic(telemetry)
-        rssi = m["rssi"]
-        battery = m["battery"]
-        transformer = m["transformer"]
-        jitter_ms = m["jitter_ms"]
-        packet_loss = m["packet_loss_pct"]
-        fps = m["fps"]
-        bitrate = m["bitrate"]
-        findings: list[str] = []
-        visual_findings: list[str] = []
-        root_cause = "NONE"
-        status = "HEALTHY"
-        confidence = 0.86
+        assessment = _assess(m, video_metrics, camera_active)
+        if assessment["dominant"] is None:
+            missing = _missing_essential_metrics(m)
+            if missing:
+                report = _insufficient_data_diagnostic(missing, camera_active)
+                report["visual_findings"] = [STANDBY_VISUAL_FINDING] if not camera_active else []
+                return report
+            return _nominal_diagnostic(camera_active)
 
-        if not camera_active:
-            visual_findings.append(
-                "Camera in low-power standby mode. Optical sensor powered down by design."
-            )
+        dominant = assessment["dominant"]
+        if camera_active:
+            # Every analyzer issue, stream ones included (e.g. a low file bitrate the telemetry does not show).
+            visual_findings = list(video_metrics.get("issues", []))
         else:
-            visual_findings.extend(video_metrics.get("issues", [])[:2])
-
-        # Same rule order as _precheck_anomaly, so both name the same domain for the same metrics.
-        if battery is not None and battery < BATTERY_CRITICAL_PCT:
-            root_cause = "HARDWARE_POWER"
-            status = "CRITICAL"
-            findings.append(f"Battery level is critically low at {battery}%.")
-        elif transformer is not None and transformer < TRANSFORMER_MIN_VAC:
-            root_cause = "HARDWARE_POWER"
-            status = "CRITICAL" if transformer == 0 else "DEGRADED"
-            findings.append(f"Transformer voltage is {transformer} VAC.")
-        elif _mechanical_chime_undervoltage(m):
-            root_cause = "HARDWARE_POWER"
-            status = "DEGRADED"
-            findings.append(
-                f"Transformer voltage is {transformer} VAC, below the {MECHANICAL_CHIME_MIN_VAC:g} VAC "
-                "project diagnostic rule for a mechanical in-home chime."
-            )
-        elif _network_degraded(m):
-            root_cause = "NETWORK"
-            status = "DEGRADED"
-            if rssi is not None and rssi < RSSI_DEGRADED_DBM:
-                findings.append(f"Wi-Fi RSSI is weak at {rssi} dBm.")
-            if ((packet_loss is not None and packet_loss > PACKET_LOSS_DEGRADED_PCT)
-                    or (jitter_ms is not None and jitter_ms > JITTER_DEGRADED_MS)):
-                loss_str = f"{packet_loss:.1f}%" if packet_loss is not None else "unmeasured"
-                jitter_str = f"{jitter_ms:.1f} ms" if jitter_ms is not None else "unmeasured"
-                findings.append(
-                    f"Transport quality is degraded ({loss_str} packet loss, {jitter_str} jitter)."
-                )
-        elif _stream_degraded(m):
-            root_cause = "NETWORK"
-            status = "DEGRADED"
-            fps_str = fps if fps is not None else "unknown"
-            bitrate_str = bitrate if bitrate is not None else "unknown"
-            findings.append(f"Stream quality is reduced ({fps_str} FPS, {bitrate_str} kbps).")
-        elif camera_active and video_metrics.get("status") == "CRITICAL":
-            root_cause = "OPTICAL_PHYSICAL"
-            status = "CRITICAL"
-            findings.append("The analyzed frame has no usable optical signal.")
-        elif camera_active and video_metrics.get("issues"):
-            root_cause = "OPTICAL_PHYSICAL"
-            status = "DEGRADED"
-            findings.append("The video analyzer detected visual quality issues.")
-        elif camera_active and video_metrics.get("optical_banding_detected", False):
-            root_cause = "OPTICAL_PHYSICAL"
-            status = "DEGRADED"
-            findings.append("OpenCV detected degraded optical clarity or banding.")
-        elif _missing_essential_metrics(m):
-            report = _insufficient_data_diagnostic(_missing_essential_metrics(m), camera_active)
-            report["visual_findings"] = visual_findings[:2]
-            return report
-        else:
-            findings.append("Device, transport, and analyzed video metrics are nominal.")
-
-        if not findings:
-            findings.append("No deterministic anomaly was identified.")
-
-        mitigation = "Continue monitoring the device."
-        if articles:
-            actions = articles[0].get("recommended_actions", [])
-            if actions:
-                mitigation = actions[0]
-
+            visual_findings = [STANDBY_VISUAL_FINDING]
+        mitigation, _source = _fallback_mitigation(dominant, articles)
         return {
-            "diagnostic_status": status,
-            "root_cause_domain": root_cause,
-            "confidence_score": confidence,
-            "telemetry_findings": findings[:2],
-            "visual_findings": visual_findings[:2],
+            "diagnostic_status": assessment["level"],
+            "root_cause_domain": dominant["domain"],
+            "confidence_score": FALLBACK_CONFIDENCE,
+            "telemetry_findings": [a["finding"] for a in assessment["anomalies"] if a["metric"] != "video"]
+                                  or ["Device and transport telemetry are within the GREEN band."],
+            "visual_findings": visual_findings,
             "recommended_mitigation": mitigation,
         }
 
@@ -512,31 +549,22 @@ class SupportConcierge:
         telemetry: Dict[str, Any],
         camera_active: bool,
     ) -> Optional[Dict[str, Any]]:
-        """Detects clear anomalies before spending a Bedrock request. Unmeasured metrics never trigger one."""
+        """
+        Detects anomalies before spending a Bedrock request. Unmeasured metrics never trigger one.
+        Returns the dominant anomaly's domain and reason, the deterministic level (worst metric) and
+        every anomaly found, or None when everything measured is GREEN.
+        """
         m = _telemetry_metrics(telemetry, video_metrics, camera_active)
-        battery = m["battery"]
-        transformer = m["transformer"]
-
         if m["online"] is False:
-            return {"domain": "UNKNOWN", "reason": "Device reported offline"}
-        if battery is not None and battery < BATTERY_CRITICAL_PCT:
-            return {"domain": "HARDWARE_POWER", "reason": "Critical battery level"}
-        if transformer is not None and transformer < TRANSFORMER_MIN_VAC:
-            return {"domain": "HARDWARE_POWER", "reason": "Transformer undervoltage"}
-        if _mechanical_chime_undervoltage(m):
-            return {"domain": "HARDWARE_POWER", "reason": "Transformer voltage too low for a mechanical chime"}
-        if _network_degraded(m):
-            return {"domain": "NETWORK", "reason": "Degraded network metrics"}
-        if _stream_degraded(m):
-            return {"domain": "NETWORK", "reason": "Reduced stream quality"}
-        if camera_active and video_metrics.get("status") == "CRITICAL":
-            return {"domain": "OPTICAL_PHYSICAL", "reason": "No usable optical signal"}
+            return {"domain": "UNKNOWN", "reason": "Device reported offline", "level": severity.CRITICAL,
+                    "anomalies": []}
         # Blur is judged by the analyzer (it reports it in "issues"); no second raw sharpness threshold here.
-        if camera_active and video_metrics.get("issues"):
-            return {"domain": "OPTICAL_PHYSICAL", "reason": "Visual quality issue detected"}
-        if camera_active and video_metrics.get("optical_banding_detected", False):
-            return {"domain": "OPTICAL_PHYSICAL", "reason": "Degraded optical metrics"}
-        return None
+        assessment = _assess(m, video_metrics, camera_active)
+        dominant = assessment["dominant"]
+        if dominant is None:
+            return None
+        return {"domain": dominant["domain"], "reason": dominant["reason"], "level": assessment["level"],
+                "anomalies": assessment["anomalies"]}
 
     def process_stream(
         self,
@@ -732,15 +760,11 @@ class SupportConcierge:
             trans_str = show(None, "device_health", "transformer_voltage_vac")
         else:
             pwr_note = "WIRED WITH CONTINUOUS TRANSFORMER"
-            if trans_v == 0:
-                trans_str = "0.0 V AC [CRITICAL ALERT: COMPLETE POWER LOSS / DISCONNECTED TRANSFORMER]"
-            elif trans_v < TRANSFORMER_MIN_VAC:
-                trans_str = f"{trans_v} V AC [ALERT: INSUFFICIENT SUBVOLTAGE]"
-            elif _mechanical_chime_undervoltage(metrics):
-                trans_str = (f"{trans_v} V AC [ALERT: below the {MECHANICAL_CHIME_MIN_VAC:g} V AC project rule "
-                             "for the reported mechanical in-home chime]")
-            else:
-                trans_str = f"{trans_v} V AC"
+            power_alerts = [a for a in anomaly["anomalies"] if a["metric"] in ("transformer", "mechanical_chime")]
+            trans_str = f"{trans_v} V AC" + "".join(
+                f" [{a['level']}: {a['label']} ({severity.OP_SYMBOLS[a['op']]} {a['limit']:g} V AC, project rule"
+                + (" for the reported mechanical in-home chime only" if a["metric"] == "mechanical_chime" else "")
+                + ")]" for a in power_alerts)
 
         if no_frame_reason:
             video_section = "- Not available: no video frame was analyzed."
@@ -815,6 +839,16 @@ class SupportConcierge:
         if no_video_finding:
             diagnostic_result["visual_findings"] = [no_video_finding]
 
+        # The severity label is deterministic (worst metric level of the severity table), never the
+        # model's opinion; the model's findings and mitigation are kept.
+        severity_override = None
+        model_status = diagnostic_result.get("diagnostic_status")
+        if model_status != anomaly["level"]:
+            severity_override = {"model": model_status, "deterministic": anomaly["level"]}
+            logger.warning("Replacing model severity %s with the deterministic level %s (%s)",
+                           model_status, anomaly["level"], anomaly["reason"])
+            diagnostic_result["diagnostic_status"] = anomaly["level"]
+
         print(f"      Diagnosis: {diagnostic_result.get('diagnostic_status')} | "
               f"Domain: {diagnostic_result.get('root_cause_domain')} | "
               f"Confidence: {diagnostic_result.get('confidence_score')}")
@@ -824,6 +858,8 @@ class SupportConcierge:
             "telemetry":         telemetry,
             "retrieved_articles": articles,
             "diagnostic_result": diagnostic_result,
+            "severity_level":    anomaly["level"],
+            "severity_override": severity_override,
             "_provider":         provider,
             "_model":            self.model_id if provider == "bedrock" else None,
         })

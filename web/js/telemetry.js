@@ -6,14 +6,113 @@
 
 let telemetryDebounceTimer = null;
 
-// Diagnostic alert thresholds used by the heartbeat (web/js/app.js). Same values and meaning as
-// src/agent/concierge.py (parity: tests/test_threshold_parity.py). The badge and metric colour
-// bands below are display bands, not diagnostic rules.
-const BATTERY_CRITICAL_PCT = 10;        // battery % < this (immediate alert)
-const TRANSFORMER_MIN_VAC = 12.0;       // wired transformer VAC < this (project heuristic)
-const RSSI_DEGRADED_DBM = -75;          // rssi dBm < this
-const PACKET_LOSS_DEGRADED_PCT = 8.0;   // packet loss % > this
-const JITTER_DEGRADED_MS = 40.0;        // jitter ms > this
+// Severity levels (GREEN / DEGRADED / CRITICAL) come from GET /api/thresholds, the backend's single
+// table (src/config/severity_thresholds.json). The page keeps no copy of the numbers: the heartbeat,
+// the badges, the metric cards and the signal pill all classify through classifyMetric().
+let SEVERITY = null;
+const LEVEL_RANK = { GREEN: 0, DEGRADED: 1, CRITICAL: 2 };
+const OP_SYMBOLS = { lt: '<', lte: '≤', gt: '>', gte: '≥' };
+const SEVERITY_OPS = {
+  lt: (v, x) => v < x, lte: (v, x) => v <= x, gt: (v, x) => v > x, gte: (v, x) => v >= x,
+};
+
+/** Installs a severity table (the /api/thresholds body); false when it is not usable. */
+function applySeverityTable(table) {
+  if (!table || typeof table.metrics !== 'object' || !table.heartbeat || !table.domain_labels) return false;
+  SEVERITY = table;
+  return true;
+}
+
+async function loadSeverityTable() {
+  try {
+    const r = await fetch('/api/thresholds');
+    return r.ok && applySeverityTable(await r.json());
+  } catch {
+    return false;
+  }
+}
+
+function levelRank(level) { return LEVEL_RANK[level] ?? -1; }
+
+function conditionMatches(cond, ctx) {
+  return Object.entries(cond || {}).every(([k, v]) => ctx[k] === v);
+}
+
+/** `when`: all keys must equal the context; `unless`: not all of them may. Same rule as severity.py. */
+function ruleApplies(rule, ctx) {
+  if (rule.when && !conditionMatches(rule.when, ctx)) return false;
+  if (rule.unless && conditionMatches(rule.unless, ctx)) return false;
+  return true;
+}
+
+/** Level of one value, or null when unmeasured, not applicable (e.g. a transformer on battery) or no table. */
+function classifyMetric(name, value, ctx = {}) {
+  const rule = SEVERITY && SEVERITY.metrics[name];
+  if (!rule || typeof value !== 'number' || !Number.isFinite(value) || !ruleApplies(rule, ctx)) return null;
+  const band = rule.bands.find(b => ruleApplies(b, ctx) && SEVERITY_OPS[b.op](value, b.value));
+  return band
+    ? { metric: name, value, domain: rule.domain, unit: rule.unit, level: band.level, label: band.label,
+        reason: band.reason, op: band.op, limit: band.value }
+    : { metric: name, value, domain: rule.domain, unit: rule.unit, level: 'GREEN', label: rule.green_label,
+        reason: null, op: null, limit: null };
+}
+
+/** The boundary of a band, by label (e.g. bandLimit('battery', 'Critical') -> 10). */
+function bandLimit(name, label) {
+  const band = SEVERITY && SEVERITY.metrics[name].bands.find(b => b.label === label);
+  return band ? band.value : null;
+}
+
+/** "< 10%", "≤ 0.5 V AC", "< -88 dBm": a band boundary as text, straight from the table. */
+function limitText(item) {
+  return `${OP_SYMBOLS[item.op]} ${item.limit}${item.unit === '%' ? '' : ' '}${item.unit}`;
+}
+
+function domainLabel(domain) {
+  return (SEVERITY && SEVERITY.domain_labels[domain]) || domain;
+}
+
+function heartbeatPulsesRequired() {
+  return SEVERITY ? SEVERITY.heartbeat.degraded_pulses : 0;
+}
+
+/** Digital Twin values in the backend's metric names (src/agent/concierge.py _telemetry_metrics). */
+function twinMetrics() {
+  return {
+    rssi: state.rssi,
+    battery: state.battery,
+    transformer: state.powerMode === 'wired' ? state.transformer : null,
+    jitter_ms: state.jitter,
+    packet_loss_pct: state.loss,
+    fps: state.fps,
+    bitrate: state.bitrate,
+  };
+}
+
+function twinContext() {
+  // The Twin has no in-home chime setting, so the mechanical chime rule never applies here.
+  return { power_mode: state.powerMode, chime_type: null };
+}
+
+/**
+ * Every Twin metric with its level, the worst level and the dominant anomaly (first metric with the
+ * worst level, in table order: power, network, stream). Same algorithm as severity.classify_telemetry.
+ */
+function classifyTwinTelemetry() {
+  if (!SEVERITY) return null;
+  const values = twinMetrics();
+  const ctx = twinContext();
+  const items = Object.entries(SEVERITY.metrics)
+    .map(([name, rule]) => classifyMetric(name, values[rule.value_key || name], ctx))
+    .filter(Boolean);
+  const anomalies = items.filter(i => i.level !== 'GREEN');
+  const level = anomalies.reduce((worst, i) => (levelRank(i.level) > levelRank(worst) ? i.level : worst), 'GREEN');
+  return { level, items, anomalies, dominant: anomalies.find(i => i.level === level) || null };
+}
+
+const LEVEL_METRIC_CLASS = { GREEN: 'metric-good', DEGRADED: 'metric-fair', CRITICAL: 'metric-poor' };
+const LEVEL_BADGE_CLASS = { GREEN: 'badge-green', DEGRADED: 'badge-yellow', CRITICAL: 'badge-red' };
+const LEVEL_TEXT = { GREEN: 'OK', DEGRADED: 'Degraded', CRITICAL: 'Critical' };
 
 // Shown for any metric the Ring Partner API did not report. Never replaced by slider values.
 const METRIC_NOT_AVAILABLE = 'N/D';
@@ -102,40 +201,35 @@ function updateDeviceLiveBadges() {
     updatePartnerBadges(state.telemetry);
     return;
   }
+  // Badge colour = severity level, and the band name is always written next to it (not colour alone).
+  const ctx = twinContext();
   const wifiEl = document.getElementById('badge-wifi');
-  if (wifiEl) {
-    if (state.rssi >= -60)      { wifiEl.textContent = '📶 Wi-Fi OK';    wifiEl.className = 'badge badge-green'; }
-    else if (state.rssi >= -75) { wifiEl.textContent = '📶 Wi-Fi Weak';  wifiEl.className = 'badge badge-yellow'; }
-    else                        { wifiEl.textContent = '📶 Wi-Fi Poor';  wifiEl.className = 'badge badge-red'; }
+  const wifi = classifyMetric('rssi', state.rssi, ctx);
+  if (wifiEl && wifi) {
+    wifiEl.textContent = `📶 Wi-Fi ${wifi.label}`;
+    wifiEl.className = 'badge ' + LEVEL_BADGE_CLASS[wifi.level];
   }
 
   const batEl = document.getElementById('badge-battery');
   if (batEl) {
     if (state.powerMode === 'battery') {
-      if (state.battery >= 30) {
-        batEl.textContent = `🔋 ${state.battery}% (Battery)`;
-        batEl.className = 'badge badge-green';
-      } else if (state.battery >= 10) {
-        batEl.textContent = `🔋 ${state.battery}% (Low)`;
-        batEl.className = 'badge badge-yellow';
-      } else {
-        batEl.textContent = `🪫 ${state.battery}% (Critical)`;
-        batEl.className = 'badge badge-red';
+      const bat = classifyMetric('battery', state.battery, ctx);
+      if (bat) {
+        const icon = bat.level === 'CRITICAL' ? '🪫' : '🔋';
+        batEl.textContent = `${icon} ${state.battery}% (${bat.level === 'GREEN' ? 'Battery' : bat.label})`;
+        batEl.className = 'badge ' + LEVEL_BADGE_CLASS[bat.level];
       }
     } else {
-      // Continuous hardwired power
-      if (state.transformer > 0 && state.transformer < 12) {
-        batEl.textContent = `⚡ Undervoltage (${state.transformer}V)`;
-        batEl.className = 'badge badge-yellow';
-      } else if (state.transformer === 0 || state.hardwareFaults.powerCut) {
-        batEl.textContent = `🪫 No Power (0V)`;
-        batEl.className = 'badge badge-red';
-      } else if (state.battery >= 30) {
-        batEl.textContent = `⚡ ${state.transformer.toFixed(1)}V (Hardwired)`;
-        batEl.className = 'badge badge-green';
-      } else {
-        batEl.textContent = `🔋 ${state.battery}%`;
-        batEl.className = 'badge badge-yellow';
+      // Continuous hardwired power: the transformer band decides (the battery is a trickle-charged backup).
+      const tr = classifyMetric('transformer', state.transformer, ctx);
+      if (tr) {
+        const text = {
+          GREEN: `⚡ ${state.transformer.toFixed(1)}V (Hardwired)`,
+          DEGRADED: `⚡ ${tr.label} (${state.transformer}V)`,
+          CRITICAL: `🪫 ${tr.label} (${state.transformer}V)`,
+        };
+        batEl.textContent = text[tr.level];
+        batEl.className = 'badge ' + LEVEL_BADGE_CLASS[tr.level];
       }
     }
   }
@@ -194,7 +288,7 @@ async function refreshTelemetry() {
       rssi:         state.rssi,
       battery_percentage: state.battery,
       transformer_voltage_vac: state.powerMode === 'wired' ? state.transformer : null,
-      battery_saver_low_voltage: state.battery < 10,
+      battery_saver_low_voltage: state.battery < bandLimit('battery', 'Critical'),
       jitter_ms:    state.jitter,
       packet_loss_pct: state.loss,
       frames_per_second: state.fps,
@@ -245,10 +339,18 @@ function updateMetricCards(t) {
   const jitter  = rtp.jitter != null ? (rtp.jitter * 1000).toFixed(1) : state.jitter.toFixed(1);
   const loss    = rtp.packet_loss_fraction != null ? (rtp.packet_loss_fraction * 100).toFixed(1) : state.loss.toFixed(1);
 
-  setMetric('m-rssi',    rssi,    rssiClass(rssi));
-  setMetric('m-battery', battery, battClass(battery));
-  setMetric('m-jitter',  jitter,  jitterClass(parseFloat(jitter)));
-  setMetric('m-loss',    loss,    lossClass(parseFloat(loss)));
+  const ctx = twinContext();
+  setLevelMetric('m-rssi',    rssi,    classifyMetric('rssi', rssi, ctx));
+  setLevelMetric('m-battery', battery, classifyMetric('battery', battery, ctx));
+  setLevelMetric('m-jitter',  jitter,  classifyMetric('jitter_ms', parseFloat(jitter), ctx));
+  setLevelMetric('m-loss',    loss,    classifyMetric('packet_loss_pct', parseFloat(loss), ctx));
+}
+
+/** Twin metric card: value, colour from the level, and the band name as text. */
+function setLevelMetric(id, value, item) {
+  setMetric(id, value, item ? LEVEL_METRIC_CLASS[item.level] : 'metric-normal');
+  const levelEl = document.getElementById(id + '-level');
+  if (levelEl) levelEl.textContent = item ? (item.level === 'GREEN' ? item.label : `${item.label} · ${LEVEL_TEXT[item.level]}`) : '';
 }
 
 function updatePartnerMetricCards(t) {
@@ -346,11 +448,12 @@ function updatePartnerBadges(t) {
   const battery = measuredNumber(dh.battery_percentage);
   const transformer = measuredNumber(dh.transformer_voltage_vac);
 
+  // Partner display keeps its colour bands (unchanged Partner behaviour); the numbers come from the table.
   const wifiEl = document.getElementById('badge-wifi');
   if (wifiEl) {
     if (rssi === null)      { wifiEl.textContent = `📶 Wi-Fi ${METRIC_NOT_AVAILABLE}`; wifiEl.className = 'badge'; }
-    else if (rssi >= -60)   { wifiEl.textContent = '📶 Wi-Fi OK';    wifiEl.className = 'badge badge-green'; }
-    else if (rssi >= -75)   { wifiEl.textContent = '📶 Wi-Fi Weak';  wifiEl.className = 'badge badge-yellow'; }
+    else if (rssi >= bandLimit('rssi', 'Weak')) { wifiEl.textContent = '📶 Wi-Fi OK';    wifiEl.className = 'badge badge-green'; }
+    else if (rssi >= bandLimit('rssi', 'Poor')) { wifiEl.textContent = '📶 Wi-Fi Weak';  wifiEl.className = 'badge badge-yellow'; }
     else                    { wifiEl.textContent = '📶 Wi-Fi Poor';  wifiEl.className = 'badge badge-red'; }
   }
 
@@ -359,10 +462,11 @@ function updatePartnerBadges(t) {
     // Only measured values are shown; the power setup is never inferred from missing data.
     if (battery !== null) {
       batEl.textContent = `🔋 ${battery}%`;
-      batEl.className = 'badge ' + (battery >= 30 ? 'badge-green' : battery >= 10 ? 'badge-yellow' : 'badge-red');
+      batEl.className = 'badge ' + partnerBattBadge(battery);
     } else if (transformer !== null) {
       batEl.textContent = `⚡ ${transformer.toFixed(1)}V`;
-      batEl.className = 'badge ' + (transformer === 0 ? 'badge-red' : transformer < 12 ? 'badge-yellow' : 'badge-green');
+      batEl.className = 'badge ' + (transformer === 0 ? 'badge-red'
+        : transformer < bandLimit('transformer', 'Undervoltage') ? 'badge-yellow' : 'badge-green');
     } else {
       batEl.textContent = `🔋 Power ${METRIC_NOT_AVAILABLE}`;
       batEl.className = 'badge';
@@ -378,10 +482,21 @@ function setMetric(id, val, cls) {
   }
 }
 
-function rssiClass(v)    { return v >= -60 ? 'metric-good' : v >= -75 ? 'metric-fair' : 'metric-poor'; }
-function battClass(v)    { return v >= 30  ? 'metric-good' : v >= 10  ? 'metric-fair' : 'metric-poor'; }
-function jitterClass(v)  { return v <= 15  ? 'metric-good' : v <= 45  ? 'metric-fair' : 'metric-poor'; }
-function lossClass(v)    { return v <= 1   ? 'metric-good' : v <= 8   ? 'metric-fair' : 'metric-poor'; }
+// Partner metric cards. Ring reports no RSSI, jitter or packet loss, so in practice only the battery
+// card is classified; it keeps its 30/10 % display bands (battery-device context) as before.
+const PARTNER_DISPLAY_CTX = { power_mode: 'battery' };
+function levelClassOf(name, v) {
+  const item = classifyMetric(name, v, PARTNER_DISPLAY_CTX);
+  return item ? LEVEL_METRIC_CLASS[item.level] : 'metric-normal';
+}
+function partnerBattBadge(v) {
+  const item = classifyMetric('battery', v, PARTNER_DISPLAY_CTX);
+  return item ? LEVEL_BADGE_CLASS[item.level] : '';
+}
+function rssiClass(v)    { return levelClassOf('rssi', v); }
+function battClass(v)    { return levelClassOf('battery', v); }
+function jitterClass(v)  { return levelClassOf('jitter_ms', v); }
+function lossClass(v)    { return levelClassOf('packet_loss_pct', v); }
 
 /**
  * Resets all telemetry and physical faults to optimal Ring factory defaults.
@@ -438,10 +553,8 @@ function resetTelemetryDefaults() {
   updateCanvasEffects();
   updateDeviceLiveBadges();
 
-  state.anomalyConsecutiveCount = 0;
-  state.lastAnomalyDomain = null;
-  state.lastAnomalyReason = null;
-  if (typeof dismissDiagnosis === 'function') dismissDiagnosis();   // also clears the dedup signature
+  if (typeof resetHeartbeatIncident === 'function') resetHeartbeatIncident();
+  if (typeof dismissDiagnosis === 'function') dismissDiagnosis();   // also resets the engine label
   if (typeof updateHeartbeatUI === 'function') updateHeartbeatUI();
 
   refreshTelemetry();

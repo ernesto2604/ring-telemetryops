@@ -254,7 +254,8 @@ def test_precheck_keeps_optical_anomaly_found_by_analyzer():
 
     anomaly = SupportConcierge()._precheck_anomaly(metrics, NOMINAL_TELEMETRY, camera_active=True)
 
-    assert anomaly == {"domain": "OPTICAL_PHYSICAL", "reason": "Visual quality issue detected"}
+    assert (anomaly["domain"], anomaly["reason"], anomaly["level"]) == (
+        "OPTICAL_PHYSICAL", "Visual quality issue detected", "DEGRADED")
 
 
 def test_local_diagnostic_uses_analyzer_issues_not_its_own_threshold():

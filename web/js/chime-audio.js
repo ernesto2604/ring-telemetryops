@@ -103,9 +103,9 @@ function pressDoorbellButton() {
 
   showToast('🔔 DING! Simulated doorbell press (Digital Twin)', 'info');
 
-  // Wake camera if it was on Standby
+  // Wake camera if it was on Standby (simulated 7 s doorbell session)
   if (typeof activateCamera === 'function') {
-    activateCamera('ding', 30);
+    activateCamera('ding', 7);
   }
 }
 
@@ -248,9 +248,11 @@ function updateLedHaloState() {
     return;
   }
 
+  // Twin halo follows the severity table: any non-GREEN metric shows the warning ring.
+  const twin = typeof classifyTwinTelemetry === 'function' ? classifyTwinTelemetry() : null;
   if (state.hardwareFaults.powerCut || state.transformer === 0) {
     halo.className = 'ring-led-halo led-offline';
-  } else if (state.rssi < -75 || state.battery < 15) {
+  } else if (twin && twin.level !== 'GREEN') {
     halo.className = 'ring-led-halo led-warning';
   } else if (state.hardwareFaults.pinkFilter || state.hardwareFaults.dirtyLens) {
     halo.className = 'ring-led-halo led-error';

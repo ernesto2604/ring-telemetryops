@@ -12,12 +12,20 @@ import cv2
 import numpy as np
 from pathlib import Path
 
+from src.config import severity
+
 # Local heuristic of this project, not a Ring specification. Laplacian variance depends on
 # resolution (downscaling raises it), so both analysis paths measure at the same width and
 # share one threshold. Calibrated on data/samples/good_internet.mp4 (720 px: sharp frames
 # 235-274, simulator Dirty Lens 12-16); see README "Sharpness threshold".
 SHARPNESS_ANALYSIS_WIDTH = 720
 MIN_SHARPNESS_SCORE = 40.0
+
+# Stream limits come from the severity table (src/config/severity_thresholds.json).
+STREAM_MIN_FPS = severity.limit("fps", "Low")
+STREAM_MIN_BITRATE_KBPS = severity.limit("bitrate", "Low")
+# Issues about the stream rather than the image; the concierge judges them as stream metrics.
+STREAM_ISSUE_PREFIXES = ("Deficient frame rate", "Critically low bitrate")
 
 
 def sharpness_score(gray: np.ndarray) -> float:
@@ -198,11 +206,11 @@ class VideoAnalyzer:
         fps = float(fps_value) if fps_value is not None else None
         bitrate = float(bitrate_value) if bitrate_value is not None else None
 
-        if fps is not None and fps < 20.0 and status != "CRITICAL":
-            issues.append(f"Deficient frame rate ({fps} fps < 20 fps)")
+        if fps is not None and fps < STREAM_MIN_FPS and status != "CRITICAL":
+            issues.append(f"Deficient frame rate ({fps} fps < {STREAM_MIN_FPS:g} fps)")
             status = "DEGRADED"
-        if bitrate is not None and bitrate < 150.0 and status != "CRITICAL":
-            issues.append(f"Critically low bitrate ({bitrate} kbps)")
+        if bitrate is not None and bitrate < STREAM_MIN_BITRATE_KBPS and status != "CRITICAL":
+            issues.append(f"Critically low bitrate ({bitrate} kbps < {STREAM_MIN_BITRATE_KBPS:g} kbps)")
             status = "DEGRADED"
 
         metrics = {
@@ -260,10 +268,10 @@ class VideoAnalyzer:
         issues = []
         if height < 720:
             issues.append(f"Low resolution ({width}x{height} < 720p)")
-        if fps < 20.0:
-            issues.append(f"Deficient frame rate ({fps} fps < 20 fps)")
-        if bitrate_kbps < 150.0:
-            issues.append(f"Critically low bitrate ({bitrate_kbps} kbps)")
+        if fps < STREAM_MIN_FPS:
+            issues.append(f"Deficient frame rate ({fps} fps < {STREAM_MIN_FPS:g} fps)")
+        if bitrate_kbps < STREAM_MIN_BITRATE_KBPS:
+            issues.append(f"Critically low bitrate ({bitrate_kbps} kbps < {STREAM_MIN_BITRATE_KBPS:g} kbps)")
         if avg_blur < MIN_SHARPNESS_SCORE:
             issues.append(f"Deficient sharpness / optical blur or obstructed lens (Laplacian score: {avg_blur} < {MIN_SHARPNESS_SCORE})")
 

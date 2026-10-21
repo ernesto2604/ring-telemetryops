@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Ring TelemetryOps — Digital Twin Simulator</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
   
   <!-- Typography Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -120,17 +121,24 @@
           <button class="hw-tool-btn" id="hw-btn-dirty" onclick="toggleDirtyLens()">
             <span>💧</span> Dirty Lens
           </button>
-          <button class="hw-tool-btn" id="hw-btn-night" onclick="toggleNightMode()">
-            <span>🌙</span> Night IR LEDs
-          </button>
           <button class="hw-tool-btn" id="hw-btn-pink" onclick="togglePinkFilter()">
             <span>🌸</span> Pink IR Filter
           </button>
           <button class="hw-tool-btn" id="hw-btn-flicker" onclick="toggleFlickerLight()">
             <span>💡</span> 50/60Hz Flicker
           </button>
-          <button class="hw-tool-btn" id="hw-btn-power" onclick="togglePowerCut()" style="grid-column: 1 / -1;">
+          <button class="hw-tool-btn" id="hw-btn-power" onclick="togglePowerCut()">
             <span>⚡</span> Transformer Cut (18V→0V)
+          </button>
+        </div>
+        <div class="hw-title hw-title-normal">
+          <span>🌙 Normal operating conditions</span>
+          <span style="font-size:0.65rem;color:var(--text-muted);text-transform:none">Not a fault</span>
+        </div>
+        <div class="hw-btn-grid">
+          <button class="hw-tool-btn" id="hw-btn-night" onclick="toggleNightMode()" style="grid-column: 1 / -1;"
+                  title="Black-and-white infrared night vision is normal behaviour, not a fault">
+            <span>🌙</span> Night mode (IR LEDs)
           </button>
         </div>
       </div>
@@ -303,13 +311,13 @@
           <div class="hud-live-indicator" id="hud-live-indicator" style="display:none;">
             <span class="rec-dot"></span> SIMULATED • CALL ACTIVE
           </div>
-          <div class="hud-tag" id="hud-cam-meta">Ring 1080p HDR • 30 FPS</div>
+          <div class="hud-tag" id="hud-cam-meta">Camera standby • no stream</div>
         </div>
 
         <!-- Bottom Signal HUD Bar -->
         <div class="signal-hud-bar">
           <div class="signal-quality-pill sq-good" id="signal-quality-pill">✅ Excellent Signal</div>
-          <div class="hud-tag" id="hud-fps-live" style="margin-left:auto;">30 FPS</div>
+          <div class="hud-tag" id="hud-fps-live" style="margin-left:auto;">Standby</div>
         </div>
       </div>
 
@@ -324,7 +332,7 @@
         <button class="cam-trigger-btn" id="trigger-live" onclick="toggleLiveView()">
           <span>👁️</span> Live View
         </button>
-        <button class="cam-trigger-btn btn-stop" onclick="deactivateCamera()">
+        <button class="cam-trigger-btn btn-stop" id="btn-stop-camera" onclick="deactivateCamera()" style="display:none;">
           <span>⏹️</span> Stop Camera
         </button>
       </div>
@@ -349,21 +357,25 @@
         <div class="metric-label">Wi-Fi RSSI</div>
         <div class="metric-value metric-normal" id="m-rssi">—</div>
         <div class="metric-unit">dBm</div>
+        <div class="metric-level" id="m-rssi-level"></div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Battery</div>
         <div class="metric-value metric-normal" id="m-battery">—</div>
         <div class="metric-unit">% capacity</div>
+        <div class="metric-level" id="m-battery-level"></div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Jitter</div>
         <div class="metric-value metric-normal" id="m-jitter">—</div>
         <div class="metric-unit">ms (WebRTC)</div>
+        <div class="metric-level" id="m-jitter-level"></div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Packet Loss</div>
         <div class="metric-value metric-normal" id="m-loss">—</div>
         <div class="metric-unit">% packets</div>
+        <div class="metric-level" id="m-loss-level"></div>
       </div>
     </div>
 
@@ -376,7 +388,7 @@
         </div>
         <div class="provider-row">
           <button class="provider-btn" id="btn-analyze-now" onclick="runManualDiagnosis()" style="display:none;">🩺 Analyze now</button>
-          <span class="provider-btn active" id="engine-provider">☁️ AWS Bedrock (Claude)</span>
+          <span class="provider-btn active" id="engine-provider" title="Engine that produced the last diagnosis">⏸️ No diagnosis yet</span>
         </div>
       </div>
     </div>
@@ -414,7 +426,7 @@
     <!-- Nominal Standby Empty State -->
     <div class="empty-result" id="empty-result">
       <div class="empty-result-icon">🛡️</div>
-      <div class="empty-result-text">The system operates in nominal silent mode. If a persistent fault occurs (3 sustained heartbeats: 45s) or a degraded session is detected, the diagnostic report will appear automatically here.</div>
+      <div class="empty-result-text">No diagnosis yet. A critical problem is diagnosed on the first heartbeat; a degraded one after 3 consecutive heartbeats (45 s). Ring Chime, PIR Motion and Live View diagnose at once when there is a problem, and say "All good" when there is none.</div>
     </div>
 
     <!-- Diagnostic Report Content -->
@@ -435,21 +447,36 @@
         </div>
       </div>
 
-      <div class="findings-grid">
-        <div class="findings-block">
-          <h3>📡 Telemetry Findings</h3>
-          <ul class="findings-list" id="telemetry-findings"></ul>
-        </div>
-        <div class="findings-block">
-          <h3>🎥 Visual Findings</h3>
-          <ul class="findings-list" id="visual-findings"></ul>
-        </div>
-      </div>
-
       <div class="mitigation-box">
-        <h3>💡 Recommended Mitigation (Ring Troubleshooting Knowledge Base)</h3>
+        <h3>💡 Recommended Mitigation</h3>
         <p id="mitigation-text"></p>
       </div>
+
+      <!-- Technical view: for a support ticket, never part of the customer notification -->
+      <details class="tech-details" id="tech-details">
+        <summary>🛠️ Technical details (for support ticket)</summary>
+        <dl class="tech-meta">
+          <dt>Engine</dt><dd id="tech-provider">—</dd>
+          <dt>Model</dt><dd id="tech-model">—</dd>
+          <dt>Severity level</dt><dd id="tech-level">—</dd>
+          <dt>KB articles</dt><dd id="tech-sops">—</dd>
+          <dt>Mitigation source</dt><dd id="tech-mitigation-source">—</dd>
+          <dt>Device ID</dt><dd id="tech-device-id">—</dd>
+        </dl>
+        <div class="findings-grid">
+          <div class="findings-block">
+            <h3>📡 Telemetry Findings</h3>
+            <ul class="findings-list" id="telemetry-findings"></ul>
+          </div>
+          <div class="findings-block">
+            <h3>🎥 Visual Findings</h3>
+            <ul class="findings-list" id="visual-findings"></ul>
+          </div>
+        </div>
+        <button class="btn-header-action" id="btn-copy-ticket" onclick="copyTicketDetails()">
+          <span>📋</span> Copy ticket details
+        </button>
+      </details>
     </div>
 
   </section>
@@ -474,10 +501,10 @@
 <div id="toast"></div>
 
 <!-- Modular Scripts in dependency order -->
-<script src="/web/js/chime-audio.js?v=6"></script>
-<script src="/web/js/canvas-engine.js?v=6"></script>
-<script src="/web/js/telemetry.js?v=6"></script>
-<script src="/web/js/app.js?v=6"></script>
+<script src="/web/js/chime-audio.js?v=7"></script>
+<script src="/web/js/canvas-engine.js?v=7"></script>
+<script src="/web/js/telemetry.js?v=7"></script>
+<script src="/web/js/app.js?v=7"></script>
 
 </body>
 </html>

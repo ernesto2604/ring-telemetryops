@@ -93,7 +93,9 @@ def test_retrieval_agrees_with_a_power_diagnosis_below_12v():
 
     assert report["root_cause_domain"] == "HARDWARE_POWER"
     assert articles[0]["id"] == POWER
-    assert report["recommended_mitigation"] == KB[POWER]["recommended_actions"][0]
+    # Plain-language power mitigation (generic until the KB article carries customer messages).
+    from src.agent.concierge import _GENERIC_MITIGATIONS
+    assert report["recommended_mitigation"] == _GENERIC_MITIGATIONS["HARDWARE_POWER"]
 
 
 # Voltage texts: no 12 V or 16 V universal requirement presented as official without a

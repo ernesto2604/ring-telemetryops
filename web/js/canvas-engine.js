@@ -167,6 +167,7 @@ function activateCamera(reason, durationSec = 30) {
   document.querySelectorAll('.cam-trigger-btn').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById('trigger-' + reason);
   if (btn) btn.classList.add('active');
+  updateCameraStateControls();
 
   // HUD Labels and Countdown Timer
   const tagNames = { ding: 'LIVE CALL', motion: 'PIR MOTION', live: 'LIVE VIEW' };
@@ -247,7 +248,23 @@ function deactivateCamera() {
   if (hudLive) hudLive.style.display = 'none';
 
   document.querySelectorAll('.cam-trigger-btn').forEach(b => b.classList.remove('active'));
+  updateCameraStateControls();
   updateLedHaloState();
+}
+
+/**
+ * Stop button, HUD tag and FPS pill follow the camera state: in standby there is no stream, so
+ * nothing to stop and no frame rate (the Stop button is hidden and the HUD says Standby).
+ */
+function updateCameraStateControls() {
+  const stopBtn = document.getElementById('btn-stop-camera');
+  if (stopBtn) stopBtn.style.display = cx.cameraActive ? '' : 'none';
+  const hudMeta = document.getElementById('hud-cam-meta');
+  if (hudMeta) hudMeta.textContent = cx.cameraActive ? `Ring 1080p HDR • ${Math.round(cx.displayFps)} FPS` : 'Camera standby • no stream';
+  const fpsPill = document.getElementById('hud-fps-live');
+  if (fpsPill && !cx.cameraActive && !(typeof showsMeasuredDataOnly === 'function' && showsMeasuredDataOnly())) {
+    fpsPill.textContent = 'Standby';
+  }
 }
 
 /**
@@ -309,22 +326,35 @@ function updateSignalHUD(rssi, loss, fps) {
     return;
   }
 
+  // Network family of the severity table: the pill's colour is the worst level and its text names it.
+  const ctx = typeof twinContext === 'function' ? twinContext() : {};
+  const net = [
+    classifyMetric('rssi', rssi, ctx),
+    classifyMetric('packet_loss_pct', loss, ctx),
+    classifyMetric('jitter_ms', state.jitter, ctx),
+    classifyMetric('fps', fps, ctx),
+    classifyMetric('bitrate', state.bitrate, ctx),
+  ].filter(Boolean);
+  const worst = net.reduce((w, i) => (levelRank(i.level) > levelRank(w) ? i.level : w), 'GREEN');
+  const wifi = net.find(i => i.metric === 'rssi');
   let label, cls;
   if (cx.powerCut) {
     label = '⚫ NO POWER (0V)'; cls = 'sq-offline';
-  } else if (rssi >= -60 && loss < 1 && fps >= 25) {
-    label = '✅ Excellent Signal'; cls = 'sq-good';
-  } else if (rssi >= -75 && loss < 5 && fps >= 15) {
-    label = '⚠️ Weak Signal'; cls = 'sq-fair';
-  } else if (rssi >= -88 && loss < 15) {
-    label = '🔴 Poor Signal'; cls = 'sq-poor';
-  } else {
+  } else if (!net.length) {
+    label = '📡 Signal N/D'; cls = '';
+  } else if (worst === 'CRITICAL') {
     label = '❌ Critical Connection'; cls = 'sq-offline';
+  } else if (worst === 'DEGRADED') {
+    label = wifi && wifi.level === 'DEGRADED' ? `⚠️ ${wifi.label} Signal` : '⚠️ Degraded Connection';
+    cls = 'sq-fair';
+  } else {
+    label = '✅ Excellent Signal'; cls = 'sq-good';
   }
   pill.textContent = label;
   pill.className = `signal-quality-pill ${cls}`;
 
-  if (fpsPill) fpsPill.textContent = `${Math.max(1, Math.round(fps))} FPS`;
+  // Standby: the camera is off, so there is no frame rate to show.
+  if (fpsPill) fpsPill.textContent = cx.cameraActive ? `${Math.max(1, Math.round(fps))} FPS` : 'Standby';
   if (hudLive && cx.powerCut) {
     hudLive.style.color = '#ff3d57';
     hudLive.innerHTML = `<span class="rec-dot" style="background:#ff3d57;"></span> POWER OUTAGE`;

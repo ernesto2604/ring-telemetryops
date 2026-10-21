@@ -133,7 +133,7 @@ def test_precheck_and_fallback_agree_on_domain(agent, video_metrics, tel, domain
 @pytest.mark.parametrize("tel, anomalous", [
     (telemetry(battery=9), True), (telemetry(battery=10), False),
     (telemetry(transformer=11.9), True), (telemetry(transformer=12.0), False),
-    (telemetry(rssi=-76), True), (telemetry(rssi=-75), False),
+    (telemetry(rssi=-61), True), (telemetry(rssi=-60), False),   # Weak Wi-Fi band starts below -60 dBm (D3)
     (telemetry(loss=0.081), True), (telemetry(loss=0.08), False),
     (telemetry(jitter=0.0401), True), (telemetry(jitter=0.040), False),
     (telemetry(fps=19.9), True), (telemetry(fps=20), False),
@@ -256,9 +256,9 @@ def test_prompt_shows_ring_check_in_time_as_reported(monkeypatch, status_attrs, 
 
 
 def test_thresholds_are_defined_once():
-    assert concierge_module.BATTERY_CRITICAL_PCT == 10
-    assert concierge_module.TRANSFORMER_MIN_VAC == 12.0
-    assert concierge_module.RSSI_DEGRADED_DBM == -75
+    from src.config import severity
+    assert concierge_module.TRANSFORMER_MIN_VAC == severity.limit("transformer", "Undervoltage") == 12.0
+    assert not hasattr(concierge_module, "RSSI_DEGRADED_DBM")   # no second copy in the concierge
 
 
 # ---------------------------------------------------------------------------

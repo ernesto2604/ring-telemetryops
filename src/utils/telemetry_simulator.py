@@ -20,10 +20,10 @@ TIER 2 — WebRTC W3C getStats() — RTCPeerConnection (WHEP live view)
 
 Simulated fault scenarios (demo labels; the retriever never treats a label as evidence):
   - nominal                     -> All parameters optimal, healthy stream and hardware
-  - wifi_degradation            -> Critical RSSI (< -80 dBm) + elevated packet loss + jitter
+  - wifi_degradation            -> Poor RSSI (-84 dBm) + elevated packet loss + jitter (levels: severity table)
   - optical_physical            -> Optimal network transport, obstructed lens or inactive IR LEDs
-  - power_issue                 -> Critical battery (<10%) or transformer subvoltage (<12V AC, project heuristic)
-  - pink_purple_tint            -> Mechanical IR Cut filter stuck in daytime position
+  - power_issue                 -> Critical battery and transformer undervoltage (levels: severity table)
+  - pink_purple_tint            -> Possible stuck mechanical IR-cut filter (pink/purple tint in daylight)
   - night_vision_glare          -> IR reflection off adjacent wall (white haze / fog halo)
   - cold_battery_drain          -> Freezing temperature (< 0°C) blocking charge with rapid drain
   - live_view_timeout           -> WebRTC connection timeout / ICE failure caused by firewall or VPN
@@ -31,7 +31,7 @@ Simulated fault scenarios (demo labels; the retriever never treats a label as ev
   - motion_delayed              -> Delayed PIR trigger or incorrect doorbell mounting height
   - solar_charging              -> Solar panel idle by design when battery is above 90%
   - poe_loss                    -> Ring Doorbell Elite: passive PoE mismatch or damaged data pair
-  - in_home_chime               -> Mechanical chime failure due to transformer voltage sag (<16V AC)
+  - in_home_chime               -> Mechanical chime failure due to transformer voltage sag (project chime rule)
   - whep_session_failure        -> WHEP Live View: SDP negotiation error or E2EE stream block
 """
 

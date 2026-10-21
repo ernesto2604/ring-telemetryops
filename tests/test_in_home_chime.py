@@ -81,7 +81,7 @@ def test_general_undervoltage_still_wins_below_12v(agent):
     assert agent._precheck_anomaly(VIDEO, tel, True)["reason"] == "Transformer undervoltage"
     report = agent._build_local_diagnostic(VIDEO, tel, [], True)
     assert report["root_cause_domain"] == "HARDWARE_POWER"
-    assert report["telemetry_findings"][0] == "Transformer voltage is 10.0 VAC."
+    assert report["telemetry_findings"][0].startswith("Transformer voltage (wired) is 10 V AC (Undervoltage: < 12 V AC")
 
 
 def test_battery_only_device_ignores_the_chime_rule(agent):

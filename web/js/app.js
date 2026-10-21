@@ -44,14 +44,16 @@ const state = {
     powerCut:   false,
   },
 
-  // Heartbeat monitor & persistence
+  // Heartbeat monitor & persistence (levels from the severity table, GET /api/thresholds)
   heartbeatRemaining: 15,
   anomalyConsecutiveCount: 0,
-  lastAnomalyDomain: null, // 'HARDWARE_POWER' | 'NETWORK'
-  lastAnomalyReason: null, // a new reason (even in the same domain) restarts the count
-  lastDiagnosedAnomalySignature: null,
-  heartbeatAlertActive: false, // the shown alert/report came from the heartbeat and is unresolved
+  lastAnomalyDomain: null, // dominant domain of the open incident: 'HARDWARE_POWER' | 'NETWORK'
+  lastAnomalyReason: null, // dominant reason (a change within the same domain continues the incident)
+  lastAnomalyLevel: null,  // 'DEGRADED' | 'CRITICAL' at the last pulse
+  diagnosedLevel: null,    // highest level already diagnosed for the open incident (no duplicate reports)
+  heartbeatAlertActive: false, // the shown report belongs to the open telemetry incident and is unresolved
   heartbeatIncident: 0,        // bumped when an incident ends (recovery, Reset): late answers are stale
+  bedrockConfigured: null,     // from GET /api/engine: are AWS credentials available to the server?
 };
 
 // ------------------------------------------------------------------
@@ -77,6 +79,12 @@ function enterUnknownSourceError(reason) {
 }
 
 async function checkServer() {
+  // Severity levels first: without them nothing can be classified, so the Twin stays disabled.
+  if (!(await loadSeverityTable())) {
+    enterUnknownSourceError('severity thresholds unavailable');
+    return;
+  }
+  await loadEngineStatus();
   // The mode comes from /api/ring/status alone (/api/scenarios has no consumer in the UI).
   let status;
   try {
@@ -228,10 +236,7 @@ function setPowerMode(mode) {
 
   // Reset power anomalies if transitioned to healthy state
   if (!getHeartbeatAnomaly()) {
-    state.anomalyConsecutiveCount = 0;
-    state.lastAnomalyDomain = null;
-    state.lastAnomalyReason = null;
-    state.lastDiagnosedAnomalySignature = null;
+    resetHeartbeatIncident();
     state.heartbeatIncident++;
     updateHeartbeatUI();
   }
@@ -244,9 +249,10 @@ function setPowerMode(mode) {
 // ------------------------------------------------------------------
 let heartbeatInterval = null;
 
-/** Seconds between pulses: the configured Partner poll interval, or the simulator's 15 s. */
+/** Seconds between pulses: the configured Partner poll interval, or the severity table's heartbeat period. */
 function heartbeatPeriod() {
-  return state.ringSource === 'partner' ? state.pollIntervalSeconds : 15;
+  if (state.ringSource !== 'partner' && SEVERITY) return SEVERITY.heartbeat.period_seconds;
+  return state.pollIntervalSeconds;
 }
 
 function startHeartbeatEngine() {
@@ -278,65 +284,45 @@ function updateHeartbeatUI() {
       state.offlineAlertActive ? 'crit' : state.offlineStreak > 0 ? 'warn' : 'ok'
     );
   } else if (countEl) {
-    const domainTag = state.lastAnomalyDomain ? ` [${state.lastAnomalyDomain === 'HARDWARE_POWER' ? 'Power' : 'Wi-Fi'}]` : '';
-    countEl.textContent = `${state.anomalyConsecutiveCount}/3 heartbeats${domainTag}`;
+    // Text next to the colour: the problem family and its level (Degraded counts, Critical is immediate).
+    const family = { HARDWARE_POWER: 'Power', NETWORK: 'Network' }[state.lastAnomalyDomain];
+    const tag = family ? ` [${family} · ${LEVEL_TEXT[state.lastAnomalyLevel] || ''}]` : '';
+    const required = heartbeatPulsesRequired();
+    countEl.textContent = `${state.anomalyConsecutiveCount}/${required} heartbeats${tag}`;
     countEl.className = 'persistency-badge ' + (
       state.anomalyConsecutiveCount === 0 ? 'ok' :
-      state.anomalyConsecutiveCount < 3 ? 'warn' : 'crit'
+      state.anomalyConsecutiveCount < required && state.lastAnomalyLevel !== 'CRITICAL' ? 'warn' : 'crit'
     );
   }
 }
 
 /**
- * Evaluates reportable anomalies in background standby heartbeats.
- * Accurately differentiates between hardwired and battery-only installations:
- * - Hardwired: 0V transformer or power cut is a critical hardware fault (HARDWARE_POWER).
- * - Battery-Only: Transformer does not exist; only evaluates battery depletion (<10%, immediate).
+ * The Twin's worst severity level and dominant anomaly, or null when every metric is GREEN.
+ * Same table and algorithm as the backend pre-check (src/config/severity.py):
+ * - Hardwired: the transformer band applies (critical at the power-cut band, degraded below the minimum).
+ * - Battery-Only: the transformer does not exist; the battery bands apply (critical and low).
+ * - Network and stream metrics (RSSI, packet loss, jitter, FPS, bitrate) apply to both.
  */
 function getHeartbeatAnomaly() {
-  // A. Power Evaluation
-  if (state.powerMode === 'wired') {
-    if (state.transformer === 0) {
-      return {
-        domain: 'HARDWARE_POWER',
-        isCriticalImmediate: true,
-        reason: 'Power cut / 0V AC transformer on hardwired doorbell',
-      };
-    }
-    if (state.transformer > 0 && state.transformer < TRANSFORMER_MIN_VAC) {
-      return {
-        domain: 'HARDWARE_POWER',
-        isCriticalImmediate: false,
-        reason: 'Transformer undervoltage (<12V AC)',
-      };
-    }
-  } else {
-    // Battery-Only Installation
-    if (state.battery < BATTERY_CRITICAL_PCT) {
-      return {
-        domain: 'HARDWARE_POWER',
-        isCriticalImmediate: true,
-        reason: 'Rechargeable battery critically depleted (<10%)',
-      };
-    }
-    // 10 % and above is not an anomaly; the badge's low/critical colours are display only.
-  }
-
-  // B. Network Evaluation (Wi-Fi or IP link)
-  if (state.rssi < RSSI_DEGRADED_DBM || state.loss > PACKET_LOSS_DEGRADED_PCT || state.jitter > JITTER_DEGRADED_MS) {
-    return {
-      domain: 'NETWORK',
-      isCriticalImmediate: false,
-      reason: state.rssi < RSSI_DEGRADED_DBM ? 'Weak Wi-Fi signal' : 'Degraded IP link',
-    };
-  }
-
-  return null;
+  const result = classifyTwinTelemetry();
+  if (!result || !result.dominant) return null;
+  const d = result.dominant;
+  return {
+    domain: d.domain, level: result.level, metric: d.metric, label: d.label, reason: d.reason,
+    op: d.op, limit: d.limit, unit: d.unit, anomalies: result.anomalies,
+    isCriticalImmediate: result.level === 'CRITICAL',
+  };
 }
 
-/**
- * Executes the background diagnostic heartbeat every 15 seconds
- */
+/** Ends the open telemetry incident's bookkeeping (counter, family, level, dedup). */
+function resetHeartbeatIncident() {
+  state.anomalyConsecutiveCount = 0;
+  state.lastAnomalyDomain = null;
+  state.lastAnomalyReason = null;
+  state.lastAnomalyLevel = null;
+  state.diagnosedLevel = null;
+}
+
 /**
  * Persistent-offline alert (prototype design choice; thresholds come from the server:
  * RING_PARTNER_OFFLINE_ALERT_READS and RING_PARTNER_OFFLINE_ALERT_MAX_GAP_SECONDS).
@@ -405,47 +391,39 @@ async function onHeartbeatPulse() {
   const anomaly = getHeartbeatAnomaly();
 
   if (anomaly) {
-    // Immediate critical power failure: trigger on 1st pulse without waiting 3 pulses
-    if (anomaly.isCriticalImmediate) {
-      state.anomalyConsecutiveCount = 3;
-      state.lastAnomalyDomain = anomaly.domain;
-      state.lastAnomalyReason = anomaly.reason;
-      updateHeartbeatUI();
-      console.log(`[Heartbeat] CRITICAL power incident on 1st pulse! (${anomaly.reason})`);
-      triggerAutonomousDiagnosis('background_immediate_power', 'power_cut');
-      return;
-    }
-
-    // Persistence rule by reason: a new reason (also within the same domain, e.g. critical ->
-    // low battery) is a new anomaly and starts again at 1. The count stops at 3.
-    if (state.lastAnomalyReason !== anomaly.reason) {
-      if (state.lastAnomalyReason) {
-        console.log(`[Heartbeat] Anomaly changed from "${state.lastAnomalyReason}" to "${anomaly.reason}". Resetting counter to 1.`);
+    // One incident per problem family (domain): weak -> poor Wi-Fi continues it, a new family restarts it.
+    if (state.lastAnomalyDomain !== anomaly.domain) {
+      if (state.lastAnomalyDomain) {
+        console.log(`[Heartbeat] Dominant problem changed from ${state.lastAnomalyDomain} to ${anomaly.domain}: new incident.`);
       }
-      state.anomalyConsecutiveCount = 1;
-    } else {
-      state.anomalyConsecutiveCount = Math.min(3, state.anomalyConsecutiveCount + 1);
+      state.anomalyConsecutiveCount = 0;
+      state.diagnosedLevel = null;
     }
+    const required = heartbeatPulsesRequired();
+    // CRITICAL counts as confirmed on its first pulse; DEGRADED needs `required` consecutive pulses.
+    state.anomalyConsecutiveCount = anomaly.level === 'CRITICAL'
+      ? required : Math.min(required, state.anomalyConsecutiveCount + 1);
     state.lastAnomalyDomain = anomaly.domain;
     state.lastAnomalyReason = anomaly.reason;
+    state.lastAnomalyLevel = anomaly.level;
 
-    console.log(`[Heartbeat] Sustained anomaly [${anomaly.domain}]: ${state.anomalyConsecutiveCount}/3 heartbeats.`);
+    console.log(`[Heartbeat] ${anomaly.level} [${anomaly.domain}] ${anomaly.reason}: ${state.anomalyConsecutiveCount}/${required} heartbeats.`);
 
-    // If persistent for 3 consecutive heartbeats (45s sustained in same domain)
-    if (state.anomalyConsecutiveCount >= 3) {
-      triggerAutonomousDiagnosis('background_persistent', anomaly.domain);
+    // Diagnose once per incident and level: a confirmed incident, or an escalation DEGRADED -> CRITICAL.
+    // A drop CRITICAL -> DEGRADED keeps the incident (and its report) open without a new diagnosis.
+    if (state.anomalyConsecutiveCount >= required && levelRank(anomaly.level) > levelRank(state.diagnosedLevel)) {
+      updateHeartbeatUI();
+      triggerAutonomousDiagnosis(anomaly.level === 'CRITICAL' ? 'background_critical' : 'background_persistent', anomaly);
+      return;
     }
   } else {
-    // Normalized telemetry: reset counter (transient jitter filtered out)
+    // Everything back to GREEN: the incident is over (transient anomalies are filtered out here too).
     if (state.anomalyConsecutiveCount > 0) {
-      console.log(`[Heartbeat] Telemetry normalized. Counter reset to 0 (micro-outage of ${state.lastAnomalyDomain} filtered).`);
+      console.log(`[Heartbeat] Telemetry back to GREEN. Counter reset to 0 (${state.lastAnomalyDomain} incident ended).`);
     }
-    state.anomalyConsecutiveCount = 0;
-    state.lastAnomalyDomain = null;
-    state.lastAnomalyReason = null;
-    // The incident is over: a later anomaly is new even with identical values, whether or not
-    // this one was rendered (skipped analysis, or replaced by an event-session report).
-    state.lastDiagnosedAnomalySignature = null;
+    resetHeartbeatIncident();
+    // A later anomaly is a new incident even with identical values, whether or not this one was
+    // rendered (skipped analysis, or replaced by an event-session report).
     state.heartbeatIncident++;
     if (state.heartbeatAlertActive) resolveHeartbeatAlert();
   }
@@ -453,17 +431,23 @@ async function onHeartbeatPulse() {
   updateHeartbeatUI();
 }
 
+// Delay before an event session is analyzed, so the canvas has rendered a frame to capture.
+let EVENT_DIAGNOSIS_DELAY_MS = 1200;
+let pendingEventDiagnosis = null;
+
 /**
- * Checks if an active session event (ding, PIR, Live View) warrants diagnosis
- * evaluating active camera feed and streaming telemetry in real-time.
+ * A trigger (Ring Chime, PIR Motion, Live View) analyzes the session at once, without the heartbeat
+ * counter: the backend pre-check checks the telemetry and the captured frame, and Bedrock is only
+ * invoked when it finds a problem (otherwise the UI says "All good"). Triggers fired close together
+ * share one analysis, so one event never produces two reports.
  */
 function checkEventSessionDiagnostics(reason) {
   if (!autoDiagnosisEnabled()) return;
-  // Let the backend pre-check telemetry and the captured frame. Bedrock is
-  // only invoked if that pre-check finds an anomaly.
-  setTimeout(() => {
+  if (pendingEventDiagnosis) clearTimeout(pendingEventDiagnosis);
+  pendingEventDiagnosis = setTimeout(() => {
+    pendingEventDiagnosis = null;
     triggerAutonomousDiagnosis('event_session', reason);
-  }, 1200);
+  }, EVENT_DIAGNOSIS_DELAY_MS);
 }
 
 // ------------------------------------------------------------------
@@ -476,12 +460,20 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
   // Without a reported data source there is nothing to diagnose: never send Twin data as a fallback.
   if (state.ringSource !== 'partner' && state.ringMode !== 'MOCK') return;
 
-  // Signature check to avoid repeating identical diagnoses in loop
-  const currentSignature = `${state.rssi}_${state.battery}_${state.transformer}_${state.loss}`;
-  if (state.lastDiagnosedAnomalySignature === currentSignature && (triggerOrigin === 'background_persistent' || triggerOrigin === 'background_immediate_power')) {
-    return;
+  // The open telemetry incident (if any) is diagnosed by this request, whoever started it: the
+  // heartbeat will not report it again at this level, so a trigger and the counter never produce
+  // two reports for one incident.
+  const incidentAnomaly = state.ringSource !== 'partner' ? getHeartbeatAnomaly() : null;
+  const previousDiagnosedLevel = state.diagnosedLevel;
+  if (incidentAnomaly) {
+    if (state.lastAnomalyDomain !== incidentAnomaly.domain) {
+      state.anomalyConsecutiveCount = 0;
+      state.lastAnomalyDomain = incidentAnomaly.domain;
+    }
+    state.lastAnomalyReason = incidentAnomaly.reason;
+    state.lastAnomalyLevel = incidentAnomaly.level;
+    if (levelRank(incidentAnomaly.level) > levelRank(state.diagnosedLevel)) state.diagnosedLevel = incidentAnomaly.level;
   }
-  state.lastDiagnosedAnomalySignature = currentSignature;
 
   isAnalyzing = true;
   showAnalyzingIndicator(true);
@@ -526,20 +518,13 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
     });
 
     if (!r.ok) {
-      // A failed request is reported as a failure, never as a diagnosis.
-      state.lastDiagnosedAnomalySignature = null;
+      // A failed request is reported as a failure, never as a diagnosis; the incident can be diagnosed again.
+      state.diagnosedLevel = previousDiagnosedLevel;
       showToast(`❌ Diagnosis failed: ${await responseErrorMessage(r)}`, 'error');
       return;
     }
 
     const data = await r.json();
-    if (data.analysis_skipped) {
-      const noVideo = data.video_analysis && data.video_analysis.available === false;
-      showToast(noVideo
-        ? '✅ No anomaly in measured telemetry (no video frame analyzed); Bedrock analysis skipped'
-        : '✅ Telemetry and video metrics nominal; Bedrock analysis skipped', 'info');
-      return;
-    }
 
     // A heartbeat analysis that answers after its incident ended (recovery or Reset) is stale:
     // showing it would bring back a resolved alert. Event and manual analyses are not affected.
@@ -549,26 +534,51 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
     }
 
     const diag = data.diagnostic_result;
+    if (data.analysis_skipped || !diag || diag.diagnostic_status === 'HEALTHY') {
+      showAllGood(data);
+      return;
+    }
 
-    // Render the full diagnostic report
-    renderResult(diag);
+    // Render the full diagnostic report (user view + technical details)
+    renderResult(diag, data);
     showReportProvider(data._provider);
 
-    // Trigger Smart Ring App Push Notification
-    showAppPushNotification(diag, triggerOrigin, extraContext);
+    // One push notification per incident: a repeat of the alert already shown only updates the report.
+    const repeat = state.activeAlert && incidentAnomaly && state.heartbeatAlertActive
+      && state.activeAlert.domain === diag.root_cause_domain && state.activeAlert.status === diag.diagnostic_status;
+    if (!repeat) showAppPushNotification(diag, triggerOrigin, extraContext);
 
-    // A new report is current, not resolved. Only heartbeat alerts are resolved by a nominal pulse.
+    // A new report is current, not resolved. It is resolved by the heartbeat only when it belongs to the
+    // open telemetry incident (every metric back to GREEN); an optical-only event report stays as is.
     setResolvedNote(false);
-    state.heartbeatAlertActive = triggerOrigin.startsWith('background_');
+    state.heartbeatAlertActive = triggerOrigin.startsWith('background_') || !!incidentAnomaly;
 
   } catch (err) {
     console.error('Error during autonomous diagnosis:', err);
-    state.lastDiagnosedAnomalySignature = null;
+    state.diagnosedLevel = previousDiagnosedLevel;
     showToast(`❌ Diagnosis failed: ${err.message || 'network error'}`, 'error');
   } finally {
     isAnalyzing = false;
     showAnalyzingIndicator(false);
   }
+}
+
+/** Nominal result (pre-check, no Bedrock call): said explicitly instead of leaving the screen silent. */
+function showAllGood(data) {
+  const noVideo = data.video_analysis && data.video_analysis.available === false;
+  const message = noVideo
+    ? '✅ All good: no issue in the measured telemetry (no video frame analyzed). Bedrock was not called.'
+    : '✅ All good: no issues detected. Bedrock was not called.';
+  showToast(message, 'success');
+  // An open incident's report stays on screen until the heartbeat resolves it.
+  if (state.heartbeatAlertActive) return;
+  const diag = data.diagnostic_result || {
+    diagnostic_status: 'HEALTHY', root_cause_domain: 'NONE', confidence_score: 1,
+    telemetry_findings: [], visual_findings: [], recommended_mitigation: 'No action needed.',
+  };
+  renderResult(diag, data);
+  showReportProvider(data._provider || 'precheck');
+  setResolvedNote(false);
 }
 
 /** Explicit diagnosis from the UI (the only trigger in Partner mode). */
@@ -602,6 +612,11 @@ function showAnalyzingIndicator(active) {
   }
 }
 
+/**
+ * Push notification as the Ring app would show it: a title and one short line. The full
+ * mitigation lives in the report card below, so the banner never repeats it (no duplicate text).
+ * Titles quote the severity table's boundaries (limitText), never hard-coded numbers.
+ */
 function showAppPushNotification(diag, origin, extraContext) {
   const banner = document.getElementById('app-push-banner');
   const titleEl = document.getElementById('app-push-title');
@@ -613,40 +628,35 @@ function showAppPushNotification(diag, origin, extraContext) {
   const status = diag.diagnostic_status || 'DEGRADED';
   banner.className = 'app-push-banner show ' + (status === 'CRITICAL' ? '' : 'warning');
   iconEl.textContent = status === 'CRITICAL' ? '🚨' : status === 'INSUFFICIENT_DATA' ? '❔' : '⚠️';
-
-  if (status === 'INSUFFICIENT_DATA') {
-    titleEl.textContent = 'Ring: Not enough data to diagnose this device';
-    descEl.textContent = diag.recommended_mitigation || 'Some essential metrics were not measured.';
-  } else if (origin === 'manual') {
-    titleEl.textContent = `Ring diagnosis: ${status}`;
-    descEl.textContent = diag.recommended_mitigation || 'See the diagnostic console for details.';
-  } else if (origin === 'background_immediate_power') {
-    if (state.powerMode === 'battery') {
-      titleEl.textContent = `Ring Alert: Critical Battery Depleted (≤5%)`;
-    } else {
-      titleEl.textContent = `Ring Alert: Critical Power Outage (0V AC)`;
-    }
-    descEl.textContent = diag.recommended_mitigation || 'A critical power loss was detected on your device.';
-  } else if (origin === 'background_persistent') {
-    const domainLabel = extraContext === 'HARDWARE_POWER' ? 'Power' : 'Wi-Fi Network';
-    titleEl.textContent = `Ring Alert: Persistent anomaly in ${domainLabel} (${state.anomalyConsecutiveCount} heartbeats)`;
-    descEl.textContent = diag.recommended_mitigation || 'We detected continuous issues with your device.';
-  } else {
-    const names = { ding: 'Doorbell Call', motion: 'Motion Detection', live: 'Live View' };
-    titleEl.textContent = `Ring Alert: Issue during ${names[extraContext] || 'Streaming'}`;
-    descEl.textContent = diag.recommended_mitigation || 'Quality or power issues were detected during the active session.';
-  }
+  titleEl.textContent = alertTitle(diag, origin, extraContext);
+  descEl.textContent = status === 'INSUFFICIENT_DATA'
+    ? 'Some essential metrics were not measured. See the report below.'
+    : `${domainLabel(diag.root_cause_domain)}: see the report below for what to do.`;
 
   if (metaEl) {
     // Model output is untrusted: built as text, never parsed as HTML.
     metaEl.innerHTML = '';
     const domainEl = document.createElement('span');
-    domainEl.textContent = `Domain: ${diag.root_cause_domain}`;
+    domainEl.textContent = `${status} • ${domainLabel(diag.root_cause_domain)}`;
     const confEl = document.createElement('span');
     confEl.textContent = ` • Confidence: ${Math.round((diag.confidence_score || 0) * 100)}%`;
     metaEl.appendChild(domainEl);
     metaEl.appendChild(confEl);
   }
+  state.activeAlert = { domain: diag.root_cause_domain, status };
+}
+
+const TRIGGER_NAMES = { ding: 'Doorbell Press', motion: 'Motion Detection', live: 'Live View' };
+
+function alertTitle(diag, origin, extraContext) {
+  const status = diag.diagnostic_status || 'DEGRADED';
+  if (status === 'INSUFFICIENT_DATA') return 'Ring: Not enough data to diagnose this device';
+  if (origin === 'manual') return `Ring diagnosis: ${status}`;
+  if (origin === 'event_session') return `Ring Alert: Issue during ${TRIGGER_NAMES[extraContext] || 'Streaming'}`;
+  const anomaly = extraContext && extraContext.reason ? extraContext : null;
+  if (!anomaly) return `Ring Alert: ${status}`;
+  if (origin === 'background_critical') return `Ring Alert: ${anomaly.reason} (${limitText(anomaly)})`;
+  return `Ring Alert: ${anomaly.reason} for ${state.anomalyConsecutiveCount} heartbeats (${limitText(anomaly)})`;
 }
 
 function closePushBanner() {
@@ -654,50 +664,80 @@ function closePushBanner() {
   if (banner) banner.classList.remove('show');
 }
 
-// Names the engine that produced the shown report: a local fallback must not look like a Bedrock answer.
+const PROVIDER_LABELS = {
+  bedrock: '☁️ AWS Bedrock (Claude)',
+  local_fallback: '⚙️ Local fallback (mock-up)',
+  precheck: '⚙️ Local pre-check (no Bedrock call)',
+};
+
+/** Engine panel before any diagnosis (and after Reset / Clear): nothing has answered yet. */
+function engineIdleLabel() {
+  return state.bedrockConfigured === false ? '⚙️ Not configured (using local fallback)' : '⏸️ No diagnosis yet';
+}
+
+async function loadEngineStatus() {
+  try {
+    const r = await fetch('/api/engine');
+    if (r.ok) state.bedrockConfigured = !!(await r.json()).credentials_configured;
+  } catch {
+    // Unknown: the idle label simply says no diagnosis has run yet.
+  }
+  showReportProvider(null);
+}
+
+// Names the engine that produced the last report: a local fallback must not look like a Bedrock answer.
 function showReportProvider(provider) {
   const el = document.getElementById('engine-provider');
   if (!el) return;
-  const labels = {
-    bedrock: '☁️ AWS Bedrock (Claude)',
-    local_fallback: '⚙️ Local fallback (Bedrock unavailable)',
-    precheck: '⚙️ Local pre-check (no Bedrock call)',
-  };
-  el.textContent = labels[provider] || '☁️ AWS Bedrock (Claude)';
+  el.textContent = provider ? (PROVIDER_LABELS[provider] || `❓ Unknown engine (${provider})`) : engineIdleLabel();
 }
 
-function renderResult(diag) {
+const MITIGATION_SOURCE_LABELS = {
+  knowledge_base: 'Project knowledge base (Ring-informed, unverified)',
+  generated_no_kb_match: 'Generated, no KB match',
+};
+
+function renderResult(diag, data = {}) {
   const status    = diag.diagnostic_status || 'DEGRADED';
   const domain    = diag.root_cause_domain || 'NONE';
   const confidence= Math.round((diag.confidence_score || 0) * 100);
+  const healthy   = status === 'HEALTHY';
 
   const icons = { HEALTHY: '✅', DEGRADED: '⚠️', CRITICAL: '🚨', INSUFFICIENT_DATA: '❔' };
-  const labels = {
-    NETWORK:                  'Network Issue (Wi-Fi / Upstream)',
-    NETWORK_WEBRTC:           'WebRTC Connection / Firewall Error',
-    OPTICAL_PHYSICAL:         'Optical / Physical / Lens Issue',
-    VIDEO_OPTICS:             'Optical Interference / LED Frequency (50Hz/60Hz)',
-    HARDWARE_POWER:           'Power Supply / Battery Failure',
-    ENVIRONMENT_POWER:        'Extreme Temperature / Cold Battery',
-    AUDIO_NETWORK:            'Two-Way Audio / Echo / Jitter',
-    ALGORITHM_CONFIGURATION:  'Configuration / Mounting Height or PIR Zones',
-    NONE:                     'Healthy Device and Stream',
-    UNKNOWN:                  'Undetermined (not enough measured data)',
-  };
 
+  // User view (what the Ring app would show): status, problem type, confidence and the mitigation.
   const bar = document.getElementById('diag-status-bar');
   if (bar) bar.className = 'diagnostic-status ' + status;
   document.getElementById('diag-icon').textContent        = icons[status] || '❓';
-  document.getElementById('diag-status-text').textContent = status;
-  document.getElementById('diag-domain-text').textContent = labels[domain] || domain;
+  document.getElementById('diag-status-text').textContent = healthy ? 'All good' : status;
+  document.getElementById('diag-domain-text').textContent = healthy ? 'No issues detected' : domainLabel(domain);
 
   document.getElementById('conf-fill').style.width = confidence + '%';
   document.getElementById('conf-pct').textContent  = confidence + '%';
 
+  document.getElementById('mitigation-text').textContent = diag.recommended_mitigation || '—';
+
+  // Technical view (support ticket): findings, engine, deterministic level, KB articles, device ID.
   renderList('telemetry-findings', diag.telemetry_findings || []);
   renderList('visual-findings',    diag.visual_findings    || []);
-
-  document.getElementById('mitigation-text').textContent = diag.recommended_mitigation || '—';
+  const articles = data.retrieved_articles || [];
+  const tech = {
+    'tech-provider': PROVIDER_LABELS[data._provider] || data._provider || '—',
+    'tech-model': data._model || '—',
+    'tech-level': data.severity_level
+      ? data.severity_level + (data.severity_override
+        ? ` (model said ${data.severity_override.model}; replaced by the severity table)` : '')
+      : status,
+    'tech-sops': articles.length ? articles.map(a => a.id).join(', ') : 'None retrieved',
+    'tech-mitigation-source': MITIGATION_SOURCE_LABELS[data.mitigation_source]
+      || (data._provider === 'precheck' ? 'Pre-check (no mitigation needed)' : '—'),
+    'tech-device-id': (data.telemetry && data.telemetry.device_id) || '—',
+  };
+  Object.entries(tech).forEach(([id, text]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  });
+  state.lastReport = { diag, data };
 
   const resCont = document.getElementById('result-content');
   const emptyRes = document.getElementById('empty-result');
@@ -721,22 +761,60 @@ function renderList(id, items) {
   }
 }
 
+/** Plain-text ticket for support: the technical view of the shown report. */
+function ticketText() {
+  const report = state.lastReport;
+  if (!report) return '';
+  const { diag, data } = report;
+  const line = id => (document.getElementById(id) || {}).textContent || '—';
+  return [
+    `Status: ${diag.diagnostic_status} (${domainLabel(diag.root_cause_domain)})`,
+    `Root cause domain: ${diag.root_cause_domain}`,
+    `Confidence: ${Math.round((diag.confidence_score || 0) * 100)}%`,
+    `Engine: ${line('tech-provider')} | Model: ${line('tech-model')}`,
+    `Severity level: ${line('tech-level')}`,
+    `KB articles: ${line('tech-sops')} | Mitigation source: ${line('tech-mitigation-source')}`,
+    `Device ID: ${line('tech-device-id')}`,
+    'Telemetry findings:', ...(diag.telemetry_findings || []).map(f => `- ${f}`),
+    'Visual findings:', ...(diag.visual_findings || []).map(f => `- ${f}`),
+    `Recommended mitigation: ${diag.recommended_mitigation || '—'}`,
+    `Data source: ${(data.telemetry && data.telemetry._source) || '—'}`,
+  ].join('\n');
+}
+
+async function copyTicketDetails() {
+  const text = ticketText();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('📋 Ticket details copied', 'success');
+  } catch {
+    showToast('Copy failed: select the technical details and copy them manually', 'error');
+  }
+}
+
 // ------------------------------------------------------------------
 // Diagnostic Console: Clear
 // ------------------------------------------------------------------
 function setResolvedNote(resolved) {
   const note = document.getElementById('diag-resolved-note');
+  const resCont = document.getElementById('result-content');
+  // A resolved report is history: greyed out, with the severity it had as secondary text.
+  if (resCont) resCont.classList.toggle('resolved', resolved);
   if (!note) return;
   note.style.display = resolved ? '' : 'none';
-  note.textContent = resolved ? '✅ Resolved — telemetry back to nominal' : '';
+  const previous = state.lastReport ? state.lastReport.diag.diagnostic_status : null;
+  note.textContent = resolved
+    ? `✅ Resolved: every metric is back to GREEN${previous ? ` · was ${previous}` : ''}`
+    : '';
 }
 
-/** Heartbeat anomaly recovered: the alert ends, the report stays as history marked resolved. */
+/** The telemetry incident ended (every metric GREEN): the alert ends, the report stays as resolved history. */
 function resolveHeartbeatAlert() {
   document.getElementById('app-push-banner')?.classList.remove('show');
   setResolvedNote(true);
   state.heartbeatAlertActive = false;
-  state.lastDiagnosedAnomalySignature = null;   // a later incident is new, even with the same values
+  state.activeAlert = null;
 }
 
 /** Removes the active alert and the report (Reset / Clear). */
@@ -748,8 +826,11 @@ function dismissDiagnosis() {
   document.getElementById('app-push-banner')?.classList.remove('show');
   setResolvedNote(false);
   state.heartbeatAlertActive = false;
-  state.lastDiagnosedAnomalySignature = null;
+  state.activeAlert = null;
+  state.lastReport = null;
+  state.diagnosedLevel = null;
   state.heartbeatIncident++;
+  showReportProvider(null);
 }
 
 function clearDiagnosticConsole() {
@@ -761,8 +842,7 @@ function clearDiagnosticConsole() {
 // Trigger Simulation (Max duration 7s)
 // ------------------------------------------------------------------
 function simulateDing() {
-  pressDoorbellButton();
-  activateCamera('ding', 7);
+  pressDoorbellButton();   // chime, halo and a 7 s camera session (one activation, one analysis)
 }
 
 function simulateMotion() {
