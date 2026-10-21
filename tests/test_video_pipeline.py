@@ -106,6 +106,9 @@ def test_magenta_tint_is_reported_without_a_sharpness_issue():
 
     assert metrics["status"] == "DEGRADED"
     assert any("pink/purple tint" in i for i in metrics["issues"])
+    # N34 / C2: neutral wording, consistent with KB-RING-007 (a stuck filter blocks the colour day mode).
+    assert any("possible stuck mechanical IR-cut filter" in i for i in metrics["issues"])
+    assert not any("day position" in i for i in metrics["issues"])
     assert sharpness_issues(metrics) == []
 
 

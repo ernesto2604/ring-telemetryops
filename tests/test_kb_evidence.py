@@ -34,10 +34,20 @@ def test_pending_source_verification_matches_the_evidence_level(article_id):
     assert KB[article_id]["evidence_level"] != "official"
 
 
-def test_every_api_mapping_is_marked_unverified():
+# C5: the paths that Ring's official API documentation lists (checked 2026-10-21) say so; the fields
+# the KB attaches to them stay unverified, and none of them is implemented here.
+DOCUMENTED_PATH = "path matches Ring's official API documentation"
+
+
+def test_every_api_mapping_is_marked_unverified_or_path_only():
     assert MAPPINGS
     for article_id, mapping in MAPPINGS:
-        assert mapping["verification"].startswith("unverified"), (article_id, mapping["endpoint"])
+        note = mapping["verification"]
+        if note.startswith(DOCUMENTED_PATH):
+            # Only the path is confirmed: the fields and the implementation are explicitly not.
+            assert "not verified" in note and "not implemented" in note, (article_id, mapping["endpoint"])
+        else:
+            assert note.startswith("unverified"), (article_id, mapping["endpoint"])
 
 
 def mapping(article_id, endpoint_part):
@@ -46,7 +56,7 @@ def mapping(article_id, endpoint_part):
 
 def test_motion_events_endpoint_is_not_presented_as_queryable():
     note = mapping("KB-RING-010", "/events")["verification"].lower()
-    assert "motion" in note and "not confirmed" in note and "not implemented" in note
+    assert "motion" in note and "not verified" in note and "not implemented" in note
 
 
 def test_whep_endpoint_is_marked_not_implemented():
@@ -91,17 +101,30 @@ def test_whep_symptom_and_fact_state_that_whep_is_unverified():
     assert "unverified" in whep_fact and "not implemented" in whep_fact
 
 
-# Ring's release notes document these APIs; the KB says so without claiming the exact paths.
-@pytest.mark.parametrize("article_id, endpoint_part, api", [
-    ("KB-RING-010", "/events", "Event History API"),
-    ("KB-RING-010", "/configurations", "Device Configuration API"),
-    ("KB-RING-015", "/whep/", "WHEP"),
+@pytest.mark.parametrize("article_id, endpoint_part", [
+    ("KB-RING-010", "/events"),
+    ("KB-RING-010", "/configurations"),
+    ("KB-RING-013", "/configurations"),
+    ("KB-RING-014", "/configurations"),
+    ("KB-RING-015", "/whep/"),
+    ("KB-RING-015", "/configurations"),
 ])
-def test_documented_ring_apis_are_acknowledged_but_paths_stay_unverified(article_id, endpoint_part, api):
+def test_documented_ring_paths_are_confirmed_but_fields_stay_unverified(article_id, endpoint_part):
     note = mapping(article_id, endpoint_part)["verification"]
-    assert note.startswith("unverified")
-    assert api in note and "release notes" in note
-    assert "not implemented" in note
+    assert note.startswith(DOCUMENTED_PATH)
+    assert "developer.amazon.com/docs/ring/api-documentation.html" in note and "2026-10-21" in note
+    assert "not verified" in note and "not implemented" in note
+
+
+def test_evidence_levels_are_unchanged():
+    assert {a["evidence_level"] for a in KB.values()} == {"unverified"}
+
+
+def test_whep_session_limits_follow_ring_documentation():
+    """C5: Ring documents 30 s (battery) / 60 s (line-powered) streams, not a 10-minute expiry."""
+    facts = " ".join(KB["KB-RING-015"]["official_facts"])
+    assert "10 minutes" not in facts
+    assert "30 seconds on battery-powered devices" in facts and "60 seconds on line-powered devices" in facts
 
 
 def test_friction_log_entry_2_matches_the_code():

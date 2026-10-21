@@ -95,7 +95,10 @@
         "Understanding Wi-Fi recommendations for Ring devices",
         "Fixing offline devices",
         "Fixing audio and video issues"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your doorbell's Wi-Fi signal is weak, so live video may freeze and alerts may arrive late. Move your router closer to the doorbell or add a Wi-Fi extender, then check the signal strength in the Ring app."
+      }
     },
     {
       "id": "KB-RING-002",
@@ -168,7 +171,10 @@
       ],
       "official_sources": [
         "Finding your Ring device's transmit speed"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your doorbell can't send video fast enough, so live video may stutter. Restart your router and move it closer to the doorbell, then check Device Health in the Ring app."
+      }
     },
     {
       "id": "KB-RING-003",
@@ -239,7 +245,10 @@
       ],
       "official_sources": [
         "Finding your Internet Upload Speed"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your home internet upload speed is too low for smooth video, so recordings may freeze. Restart your router and pause other large uploads, then check Device Health in the Ring app."
+      }
     },
     {
       "id": "KB-RING-004",
@@ -391,7 +400,10 @@
       "official_sources": [
         "Fixing audio and video issues",
         "Understanding Wi-Fi recommendations for Ring devices"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your doorbell's picture looks blurry or unclear, which can hide details in your videos. Gently clean the camera lens with a soft, dry cloth, then check the live view in the Ring app."
+      }
     },
     {
       "id": "KB-RING-006",
@@ -533,7 +545,10 @@
         "Night Vision in Ring devices",
         "Fixing audio and video issues",
         "Using Mounting Accessories (Corner Kit and Wedge Kit)"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your doorbell's daytime picture looks pink or purple, which can happen when the night-vision filter is stuck. Check the live view in the Ring app again in a few minutes; if the colours stay wrong, contact Ring Support."
+      }
     },
     {
       "id": "KB-RING-008",
@@ -699,7 +714,12 @@
       "official_sources": [
         "Troubleshooting power for hardwired doorbells",
         "Ring devices and extreme temperatures"
-      ]
+      ],
+      "customer_messages": {
+        "battery": "Your doorbell's battery is low, so it may soon stop recording and sending alerts. Recharge the battery as soon as you can, then check the battery level in the Ring app.",
+        "transformer": "Your doorbell isn't getting enough power from its wiring, so it may restart, stop recording or miss alerts. Please contact a qualified electrician or Ring Support to check the doorbell's power supply.",
+        "default": "Your doorbell isn't getting the power it needs, so it may restart or miss alerts. Please contact a qualified electrician or Ring Support to check its power supply."
+      }
     },
     {
       "id": "KB-RING-010",
@@ -757,7 +777,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); the fields listed in relevant_data are not verified by this project, and the endpoint is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "motion zones",
             "privacy zones",
@@ -767,7 +787,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/history/devices/{device_id}/events",
-          "verification": "unverified path: Ring's API release notes document an Event History API for historical device events, but this exact path and whether it returns motion events are not confirmed by this project, and it is not implemented here; do not treat motion events as available through this project",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); whether it returns the motion events listed in relevant_data is not verified by this project, and the endpoint is not implemented here; do not treat motion events as available through this project",
           "relevant_data": [
             "motion events",
             "device activity"
@@ -833,21 +853,24 @@
           "operator": "gte",
           "value": 90,
           "interpretation": "Normal documented behavior: Ring solar chargers do not start charging if battery exceeds 90% to protect lithium-ion lifespan.",
-          "diagnostic_weight": 0.0
+          "diagnostic_weight": 0.0,
+          "requires": {"power_source": "Solar"}
         },
         {
           "metric": "battery_percentage",
           "operator": "lt",
           "value": 20,
           "interpretation": "Critically low battery with solar panel connected: possible solar shading, loose cable, or unsupported accessory.",
-          "diagnostic_weight": 0.9
+          "diagnostic_weight": 0.9,
+          "requires": {"power_source": "Solar"}
         },
         {
           "metric": "battery_saver_low_voltage",
           "operator": "eq",
           "value": true,
           "interpretation": "Insufficient voltage detected on solar charging circuit.",
-          "diagnostic_weight": 1.0
+          "diagnostic_weight": 1.0,
+          "requires": {"power_source": "Solar"}
         }
       ],
       "official_facts": [
@@ -1009,7 +1032,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); the fields listed in relevant_data are not verified by this project, and the endpoint is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.chime_type",
             "configurations.chime_duration_ms"
@@ -1040,7 +1063,11 @@
         "In-home chime not ringing with Ring Doorbell",
         "Installing the Ring Pro Power Kit",
         "Troubleshooting Ring Chime and Chime Pro"
-      ]
+      ],
+      "customer_messages": {
+        "mechanical_chime": "Your indoor chime may not ring because the doorbell's wiring doesn't supply enough power for a mechanical chime. Check that the right chime type is selected in the Ring app. If it still doesn't ring, contact a qualified electrician or Ring Support.",
+        "default": "Your indoor chime may not ring when someone presses the doorbell. Check the chime settings in the Ring app. If it still doesn't ring, contact a qualified electrician or Ring Support."
+      }
     },
     {
       "id": "KB-RING-014",
@@ -1082,7 +1109,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); the fields listed in relevant_data are not verified by this project, and the endpoint is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "configurations.video_frequency",
             "configurations.anti_flicker_mode"
@@ -1111,7 +1138,10 @@
       "official_sources": [
         "Video flickering or banding on Ring Doorbells and Security Cameras",
         "Ring Developer Experience: Video Pipeline Specifications"
-      ]
+      ],
+      "customer_messages": {
+        "default": "Your video shows flickering stripes, usually caused by a nearby LED light. Try switching that light off or using a different bulb, then check the live view in the Ring app."
+      }
     },
     {
       "id": "KB-RING-015",
@@ -1151,14 +1181,14 @@
         "End-to-End Encryption (E2EE) on Ring devices encrypts video at the edge using customer-managed keys; cloud WHEP endpoints cannot proxy unencrypted streams when E2EE is active.",
         "Only one active WHEP streaming session is permitted per camera simultaneously; concurrent requests yield 409 Conflict.",
         "SDP offer must include DTLS-SRTP fingerprints and ICE candidate trickling support.",
-        "Session expiration occurs after 10 minutes of continuous playback unless ICE keepalive pings are maintained.",
+        "Ring's API documentation limits live streams to up to 30 seconds on battery-powered devices and up to 60 seconds on line-powered devices; media is receive-only (recvonly: video, plus one-way audio when requested) and two-way media is not supported.",
         "Multi-camera Ring hubs require specifying the component_id parameter in the WHEP URL."
       ],
       "official_api_mapping": [
         {
           "source": "Ring Partner API",
           "endpoint": "POST /v1/devices/{device_id}/media/streaming/whep/sessions",
-          "verification": "unverified path: Ring's API release notes document live video over WebRTC/WHEP (and RTSP), but this exact path and the session details are not confirmed by this project; WHEP is not implemented here and the Digital Twin WHEP answer is simulated",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); the other session details in this article are not verified by this project; WHEP is not implemented here and the Digital Twin WHEP answer is simulated",
           "relevant_data": [
             "SDP offer/answer",
             "component_id",
@@ -1168,7 +1198,7 @@
         {
           "source": "Ring Partner API",
           "endpoint": "GET /v1/devices/{device_id}/configurations",
-          "verification": "unverified path: Ring's API release notes document a Device Configuration API (it returns an e2e_encryption object since 2026-10-09), but this exact path and these fields are not confirmed by this project, and it is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
+          "verification": "path matches Ring's official API documentation (developer.amazon.com/docs/ring/api-documentation.html, checked on 2026-10-21); the fields listed in relevant_data are not verified by this project, and the endpoint is not implemented here (the client only uses /v1/devices, /status and /capabilities)",
           "relevant_data": [
             "attributes.e2e_encryption.enabled"
           ]

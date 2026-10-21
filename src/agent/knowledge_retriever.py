@@ -11,6 +11,7 @@ Knowledge Base: data/knowledge_base/ring_video_troubleshooting.json (v2.1)
 KB sources: Ring Help Center article titles cited per article (not re-verified by this project).
 """
 
+import re
 import sys
 import json
 from pathlib import Path
@@ -22,6 +23,20 @@ if str(ROOT) not in sys.path:
 
 from src.config import severity
 from src.video_pipeline.analyzer import MIN_SHARPNESS_SCORE, STREAM_MIN_BITRATE_KBPS, STREAM_MIN_FPS
+
+
+# Analyzer issue words that point at the image itself (blur, darkness, banding, colour cast).
+VIDEO_ISSUE_WORDS = ("blur", "blurry", "dark", "black", "pixel", "banding", "flicker", "tint", "chromatic", "ir-cut")
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def _keyword_matches(keyword: str, issues_text: str, issue_tokens: set) -> bool:
+    """A KB keyword matches an issue as a phrase or word by word ("pink tint" matches "pink/purple tint")."""
+    words = _tokens(keyword)
+    return bool(words) and (keyword.lower() in issues_text or all(w in issue_tokens for w in words))
 
 
 class KnowledgeRetriever:
@@ -147,6 +162,7 @@ class KnowledgeRetriever:
             "device_transmit_speed_mbps":dh.get("device_transmit_speed_mbps"),
             "internet_upload_speed_mbps":dh.get("internet_upload_speed_mbps"),
             "device_online":             dh.get("online"),
+            "power_source":              dh.get("power_source"),  # e.g. "Solar"; scopes the solar article
             "led_status":                dh.get("led_status"),
             "motion_detection_enabled":  dh.get("motion_detection_enabled"),
             "ring_plan_active":          dh.get("ring_plan_active"),
@@ -258,6 +274,7 @@ class KnowledgeRetriever:
         mean_brightness = diagnostic_report.get("mean_brightness", 128.0)
         black_ratio     = diagnostic_report.get("black_pixel_ratio", 0.0)
         issues_text     = " ".join(diagnostic_report.get("issues", [])).lower()
+        issue_tokens    = set(_tokens(issues_text))
 
         # 3. Telemetry metrics
         tel_flat: Dict[str, Any] = {}
@@ -309,7 +326,7 @@ class KnowledgeRetriever:
                         video_score += 0.6
                     if (bitrate is not None and bitrate < STREAM_MIN_BITRATE_KBPS) or (fps is not None and fps < STREAM_MIN_FPS):
                         video_score += 0.4
-                    if any(kw in issues_text for kw in ("blur", "blurry", "dark", "black", "pixel", "banding", "flicker")):
+                    if any(kw in issues_text for kw in VIDEO_ISSUE_WORDS):
                         video_score += 0.6
                     if diagnostic_report.get("optical_banding_detected") or tel_flat.get("optical_banding_detected"):
                         video_score += 0.95
@@ -343,12 +360,13 @@ class KnowledgeRetriever:
                 if any(kw in issues_text for kw in ("audio", "echo", "microphone", "sound", "mic", "two-way")):
                     video_score += 0.7
 
-            combined = max(signal_score, video_score)
+            # Evidence is capped at 1.0 first, so the keyword bonus below always ranks the article whose
+            # keywords match the analyzer issue (e.g. the IR filter article for a pink tint) above the rest.
+            combined = min(1.0, max(signal_score, video_score))
 
-            for kw in article.get("retrieval_keywords", []):
-                if kw.lower() in issues_text:
-                    combined = min(1.0, combined + 0.15)
-                    break
+            if combined > 0 and any(_keyword_matches(kw, issues_text, issue_tokens)
+                                    for kw in article.get("retrieval_keywords", [])):
+                combined += 0.15
 
             if combined > 0.1:
                 if art_id not in scored or scored[art_id][0] < combined:

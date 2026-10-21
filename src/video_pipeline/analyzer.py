@@ -180,9 +180,11 @@ class VideoAnalyzer:
             status = "CRITICAL"
             laplacian_var = 0.0
         else:
-            # Magenta / pink tint (IR-cut mechanical filter stuck in day mode)
+            # Magenta / pink tint in daylight: a mechanical IR-cut filter may be stuck (it should switch back to
+            # colour day mode; KB-RING-005 / KB-RING-007).
             if r_mean > 1.35 * (g_mean + 5) and b_mean > 1.15 * (g_mean + 5):
-                issues.append("Severe chromatic imbalance: pink/purple tint (mechanical IR-cut filter stuck in day position)")
+                issues.append("Severe chromatic imbalance: possible stuck mechanical IR-cut filter "
+                              "(pink/purple tint in daylight)")
                 status = "DEGRADED"
 
             # Optical blur / dirty or obstructed lens

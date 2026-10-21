@@ -93,9 +93,8 @@ def test_retrieval_agrees_with_a_power_diagnosis_below_12v():
 
     assert report["root_cause_domain"] == "HARDWARE_POWER"
     assert articles[0]["id"] == POWER
-    # Plain-language power mitigation (generic until the KB article carries customer messages).
-    from src.agent.concierge import _GENERIC_MITIGATIONS
-    assert report["recommended_mitigation"] == _GENERIC_MITIGATIONS["HARDWARE_POWER"]
+    # The plain-language message of the power article, for the transformer case.
+    assert report["recommended_mitigation"] == KB[POWER]["customer_messages"]["transformer"]
 
 
 # Voltage texts: no 12 V or 16 V universal requirement presented as official without a
@@ -158,4 +157,6 @@ def test_configurations_endpoint_is_never_presented_as_confirmed():
                if m.get("endpoint", "").endswith("/configurations")]
     assert entries
     for article_id, mapping in entries:
-        assert mapping["verification"].startswith("unverified"), article_id
+        # Only the path matches Ring's documentation; the chime / flicker fields stay unverified.
+        assert mapping["verification"].startswith("path matches Ring's official API documentation"), article_id
+        assert "not verified" in mapping["verification"], article_id

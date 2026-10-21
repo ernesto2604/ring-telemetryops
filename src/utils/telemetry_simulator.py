@@ -268,7 +268,7 @@ class TelemetrySimulator:
         }
 
     def _pink_purple_tint(self) -> Dict[str, Any]:
-        """IR-cut mechanical filter jammed in daytime position."""
+        """Possible stuck mechanical IR-cut filter: pink/purple tint in daylight."""
         return {
             "scenario": "pink_purple_tint",
             "captured_at": _utcnow(),

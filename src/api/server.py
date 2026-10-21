@@ -288,8 +288,10 @@ class TelemetryRequest(BaseModel):
     # Custom: webrtc parameters
     jitter_ms: Optional[float]                = 2.0
     packet_loss_pct: Optional[float]          = 0.0
-    frames_dropped: Optional[int]             = 0
-    frames_received: Optional[int]            = 900
+    # The Digital Twin has no dropped-frame slider: unless a caller sends them, these are not simulated
+    # (None, with the reason in measurement_status) instead of a fixed 0 / 900 placeholder.
+    frames_dropped: Optional[int]             = None
+    frames_received: Optional[int]            = None
     frames_per_second: Optional[float]        = 30.0
     bitrate_kbps: Optional[int]               = 1200
     rtt_ms: Optional[float]                   = 18.0
@@ -318,8 +320,12 @@ def _build_custom_telemetry(req: TelemetryRequest) -> Dict[str, Any]:
     """Constructs a telemetry payload using custom slider parameters from the UI."""
     from src.utils.telemetry_simulator import _utcnow
     now = _utcnow()
+    not_simulated = "not simulated by the Digital Twin sliders"
+    frame_status = {name: not_simulated for name, value in
+                    (("frames_dropped", req.frames_dropped), ("frames_received", req.frames_received))
+                    if value is None}
 
-    return {
+    telemetry = {
         "scenario": "custom",
         "captured_at": now,
         "device_id": req.device_id,
@@ -342,7 +348,8 @@ def _build_custom_telemetry(req: TelemetryRequest) -> Dict[str, Any]:
             "inbound_rtp": {
                 "kind": "video",
                 "jitter": req.jitter_ms / 1000.0,
-                "packets_lost": int((req.packet_loss_pct / 100.0) * req.frames_received),
+                "packets_lost": (int((req.packet_loss_pct / 100.0) * req.frames_received)
+                                 if req.frames_received is not None else None),
                 "packet_loss_fraction": req.packet_loss_pct / 100.0,
                 "frames_dropped": req.frames_dropped,
                 "frames_received": req.frames_received,
@@ -356,6 +363,9 @@ def _build_custom_telemetry(req: TelemetryRequest) -> Dict[str, Any]:
             },
         },
     }
+    if frame_status:
+        telemetry["measurement_status"] = {"webrtc_stats": frame_status}
+    return telemetry
 
 
 def _resolve_video_path(video_path: str) -> Path:
@@ -395,7 +405,7 @@ async def get_scenarios():
             "wifi_degradation":   "Critical RSSI (-84 dBm), 18% packet loss, 85 ms WebRTC jitter.",
             "optical_physical":   "Optimal network transport, obstructed lens or inactive IR LEDs.",
             "power_issue":        "Critical battery (4%) and transformer subvoltage (10.2 V AC).",
-            "pink_purple_tint":   "IR Cut mechanical filter jammed over day sensor (magenta/purple tint).",
+            "pink_purple_tint":   "Possible stuck mechanical IR-cut filter: pink/purple tint in daylight.",
             "night_vision_glare": "IR LED reflection off adjacent wall (white haze/fog halo).",
             "cold_battery_drain": "Freezing temperature (< 0°C) blocking Li-ion charge with severe drain.",
             "live_view_timeout":  "WebRTC connection timeout / ICE failure caused by firewall or VPN.",
