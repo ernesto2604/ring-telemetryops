@@ -60,3 +60,6 @@ data/samples/*.mp4
 !data/samples/optical_obstruction.mp4
 # Local diagnostic dumps (e.g. a saved `git diff` output); never part of the project
 qqcl
+
+# Outputs of the live Bedrock verification (may quote model answers; never commit)
+live_verification/
