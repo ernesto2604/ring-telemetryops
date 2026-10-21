@@ -147,7 +147,9 @@ def test_nominal_analysis_skips_bedrock_after_precheck(monkeypatch):
     )
 
     assert result["analysis_skipped"] is True
-    assert result["diagnostic_result"] is None
+    # F2: an explicit nominal verdict from the pre-check instead of null.
+    assert result["diagnostic_result"]["diagnostic_status"] == "HEALTHY"
+    assert result["diagnostic_result"]["root_cause_domain"] == "NONE"
     assert result["_provider"] == "precheck"
 
 

@@ -220,7 +220,7 @@ def test_simulated_nominal_telemetry_still_skips_bedrock(concierge):
     result = run(concierge, TelemetrySimulator().get_telemetry("nominal"))
 
     assert result["analysis_skipped"] is True
-    assert result["diagnostic_result"] is None
+    assert result["diagnostic_result"]["diagnostic_status"] == "HEALTHY"   # F2: explicit, not null
     assert concierge.llm_prompts == []
 
 

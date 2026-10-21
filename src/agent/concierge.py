@@ -21,6 +21,7 @@ Agent Output (Strict JSON schema):
 """
 
 import os
+import re
 import sys
 import json
 import logging
@@ -53,7 +54,51 @@ BEDROCK_DEFAULT_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 # ---------------------------------------------------------------------------
 # System Prompt
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are a Principal Telemetry & Support Systems Engineer at Amazon Ring,
+# ---------------------------------------------------------------------------
+# Customer-facing text contract (D4): recommended_mitigation is the Ring app notification
+# ---------------------------------------------------------------------------
+CUSTOMER_TEXT_MAX_WORDS = 60
+# Terms a customer should not have to know; matched as whole words, case-insensitive.
+CUSTOMER_JARGON = (
+    "rssi", "dbm", "jitter", "packet loss", "kbps", "mbps", "fps", "bitrate", "webrtc", "whep", "sdp",
+    "codec", "laplacian", "ir-cut", "solenoid", "telemetry", "pre-check", "rtt", "vac",
+)
+CUSTOMER_JARGON_SHOWN = ("RSSI", "dBm", "jitter", "packet loss", "kbps", "FPS", "bitrate", "WebRTC",
+                         "solenoid", "IR-cut", "telemetry")
+# Electrical work a customer must never be told to do (D3).
+ELECTRICAL_DIY = re.compile(
+    r"\b(breakers?|multimeter|voltmeter|rewir\w*|replace (?:the |your )?transformer|"
+    r"(?:measure|test|check) (?:the |its )?(?:voltage|wiring))\b", re.I)
+_INTERNAL_FIELD = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_KB_ID = re.compile(r"\bKB-RING-\d+\b", re.I)
+
+
+def customer_text_problems(text: str) -> list[str]:
+    """Reasons why a mitigation is not fit for the customer notification (empty when it is)."""
+    problems = []
+    words = len(text.split())
+    if words > CUSTOMER_TEXT_MAX_WORDS:
+        problems.append(f"recommended_mitigation has {words} words (at most {CUSTOMER_TEXT_MAX_WORDS})")
+    jargon = [t for t in CUSTOMER_JARGON if re.search(rf"(?<![\w-]){re.escape(t)}(?![\w-])", text, re.I)]
+    if jargon:
+        problems.append("recommended_mitigation uses technical terms: " + ", ".join(jargon))
+    if _KB_ID.search(text):
+        problems.append("recommended_mitigation cites a knowledge base article ID")
+    if _INTERNAL_FIELD.search(text):
+        problems.append("recommended_mitigation contains an internal field name")
+    if ELECTRICAL_DIY.search(text):
+        problems.append("recommended_mitigation asks the customer to do electrical work")
+    return problems
+
+
+def findings_problems(report: Dict[str, Any]) -> list[str]:
+    """Technician findings may be technical, but never internal field names."""
+    names = sorted({m for field in ("telemetry_findings", "visual_findings")
+                    for item in report.get(field, []) for m in _INTERNAL_FIELD.findall(item)})
+    return [f"findings contain internal field names: {', '.join(names)}"] if names else []
+
+
+SYSTEM_PROMPT = f"""You are a Principal Telemetry & Support Systems Engineer at Amazon Ring,
 specialized in cross-modal diagnostics of smart video doorbells, computer vision stream analysis,
 device health telemetry, and network transport telemetry (WebRTC/RTCP).
 The case states the source of every telemetry block: only data marked as Ring Partner API comes
@@ -64,32 +109,48 @@ Your objective is to SIMULTANEOUSLY evaluate:
 2. Quantitative video stream metrics (sharpness_score via Laplacian variance, effective FPS, bitrate_kbps, mean_brightness, issues).
 3. Device Health telemetry (RSSI, battery_percentage, transformer_voltage_vac, led_status, battery_saver_low_voltage).
 4. Transport metrics in the WebRTC W3C getStats schema (jitter, packet_loss_fraction, RTT, frames_dropped, frames_per_second).
-5. Troubleshooting procedures retrieved from the project knowledge base (Ring Help Center-informed; not Ring SOPs).
+5. The anomalies found by the deterministic pre-check, each with its severity level.
+6. Troubleshooting procedures retrieved from the project knowledge base (Ring Help Center-informed; not Ring SOPs).
+
+SEVERITY LEVELS ({severity.PROVENANCE}; the pre-check already applied them):
+{severity.table_for_prompt()}
+The application sets diagnostic_status from the worst pre-check level; your job is the root cause, the findings and the mitigation.
 
 CRITICAL DIAGNOSTIC RULES:
+- PRE-CHECK ANOMALIES: When the case lists at least one pre-check anomaly, diagnostic_status can NOT be HEALTHY. A Weak, Poor or Critical Wi-Fi signal (RSSI) on its own IS an anomaly even when packet loss and jitter are fine: it risks dropouts and late alerts.
 - UNAVAILABLE METRICS: A value shown as "unavailable" was NOT measured. Never treat it as zero, nominal, or degraded, and never cite it as evidence. Network metrics can only be called excellent or nominal when they were actually measured. Never return HEALTHY when power or network health is unavailable.
-- BATTERY-ONLY INSTALLATION: Only if power_mode="battery", the device operates on battery by customer design. An unconnected transformer is NOT a failure. If battery is above 10% and network metrics are nominal, the power subsystem is HEALTHY.
+- BATTERY-ONLY INSTALLATION: Only if power_mode="battery", the device operates on battery by customer design. An unconnected transformer is NOT a failure. If the battery is GREEN in the severity levels and the network metrics are GREEN, the power subsystem is HEALTHY.
 - UNKNOWN POWER SETUP: If power_mode is not given and transformer_voltage_vac is unavailable, the power setup is UNKNOWN. Do NOT assume a battery-only or a wired installation.
+- BACKUP BATTERY: A wired doorbell with a charged internal battery and a transformer at 0 V is consistent: the battery is a backup that keeps the device running. Never call this inconsistent and never suggest stale telemetry for that reason.
 - STANDBY / LOW-POWER MODE: If the camera is inactive (camera_active=false or status="STANDBY"), the optical sensor is shut down by low-power design. There is NO video frame or active stream. In "visual_findings" you MUST output EXCLUSIVELY: ["Camera in low-power standby mode. Optical sensor powered down by design."]. NEVER invent or hallucinate visual scenes, people, walls, bricks, or optical features during Standby. Root cause and remediation must be 100% telemetry-driven (Wi-Fi, WebRTC, battery).
 - TELEMETRY-ONLY (NO FRAME): If the case says no video frame is available, the camera state is NOT known to be standby. Do not describe or infer any visual or optical condition; in "visual_findings" output only the stated reason. Root cause and remediation must be telemetry-driven.
-- OPTICAL VS NETWORK DISAMBIGUATION: If video is blurry, exhibits pink/purple color tint, IR glare/halo, or 50Hz/60Hz flickering horizontal bands, BUT network metrics are excellent (RSSI > -65 dBm, loss < 1%, jitter < 15ms) → assign OPTICAL_PHYSICAL root cause.
-- NETWORK DEGRADATION: If video shows macroblocking, pixelation, stuttering, OR RSSI < -75 dBm, OR packet loss > 8%, OR jitter > 40ms → assign NETWORK root cause.
-- POWER SUBSYSTEM: If battery_percentage < 10% OR battery_saver_low_voltage=true OR transformer_voltage_vac < 12V AC (on wired setups) → assign HARDWARE_POWER or ENVIRONMENT_POWER.
-- MECHANICAL IN-HOME CHIME: Only if chime_type_setting="mechanical" on a wired setup and transformer_voltage_vac < 16V AC → assign DEGRADED with HARDWARE_POWER (project diagnostic rule for mechanical chimes, not a Ring specification; it does not apply to other devices).
+- OPTICAL VS NETWORK DISAMBIGUATION: If video is blurry, exhibits pink/purple color tint, IR glare/halo, or 50Hz/60Hz flickering horizontal bands, BUT every network metric is GREEN in the severity levels → assign OPTICAL_PHYSICAL root cause.
+- NETWORK DEGRADATION: If video shows macroblocking, pixelation, stuttering, OR any network metric (RSSI, packet loss, jitter, frame rate, bitrate) is DEGRADED or CRITICAL → assign NETWORK root cause.
+- POWER SUBSYSTEM: If the battery or the transformer is DEGRADED or CRITICAL in the severity levels, OR battery_saver_low_voltage=true → assign HARDWARE_POWER or ENVIRONMENT_POWER.
+- MECHANICAL IN-HOME CHIME: The mechanical chime level applies only if chime_type_setting="mechanical" on a wired setup → assign DEGRADED with HARDWARE_POWER. It is a project diagnostic rule for mechanical chimes, never a requirement of the doorbell itself (for example not of the Video Doorbell 4).
 - AUDIO DEGRADATION: If two-way audio distortion or choppy audio correlates with high jitter → assign AUDIO_NETWORK.
 - FIELD OF VIEW / CONFIGURATION: If issue involves mounting height, false motion triggers, or PIR angle → assign ALGORITHM_CONFIGURATION.
-- NOMINAL: If all telemetry and optical metrics satisfy healthy thresholds → assign HEALTHY with root_cause_domain="NONE".
+- NOMINAL: If all telemetry and optical metrics are GREEN → assign HEALTHY with root_cause_domain="NONE".
+- THRESHOLDS YOU QUOTE: When you say how far a metric must improve, quote ONLY the boundary of its next better level given in the case (for example, Poor RSSI must reach "at or above -75 dBm"). Never invent other limits.
+- MANUFACTURER REQUIREMENTS: Do not state Ring requirements (voltages, VA ratings, device models, accessories) unless they appear in a retrieved knowledge base article, and then call them "reference values (unverified)".
+- ELECTRICAL SAFETY: Never tell the customer to do electrical work: no switching or resetting circuit breakers, no multimeter or voltage measurements, no rewiring, no replacing the transformer. For wiring or transformer problems tell them to contact a qualified electrician or Ring Support.
+- VISUAL EVIDENCE: Recommend only what the image and metrics support. For a blurry lens do not suggest condensation, protective film or sun glare unless the image shows them.
+- NO KNOWLEDGE BASE MATCH: If no troubleshooting procedure was retrieved, give a conservative, generic mitigation (check the device in the Ring app, contact Ring Support) and do not invent a specific procedure.
 - EVIDENCE: Only telemetry labelled ring_partner_api comes from Ring. The numeric rules above are project diagnostic heuristics, not Ring requirements. The troubleshooting procedures are this project's knowledge base: content with evidence_level "unverified", verification "unverified" or source_verification "pending" is not confirmed, so never cite them as official Ring documentation and never state that a Ring API endpoint or capability exists because a procedure mentions it.
 
+WHO READS EACH FIELD:
+- "recommended_mitigation" is the notification the customer reads in the Ring app. Write plain, everyday English, at most {CUSTOMER_TEXT_MAX_WORDS - 10} words, in this order: what is happening, why it matters, what to do. Use no technical terms (no {', '.join(CUSTOMER_JARGON_SHOWN)}), no knowledge base article IDs, no internal field names, and numbers only when they help the customer. Settings that live in the Ring app are written as "in the Ring app". When a retrieved article has customer_messages, start from the message that matches the problem and adapt it to the evidence.
+- "telemetry_findings" and "visual_findings" are for a support technician: one short factual sentence per anomaly (technical terms allowed), but no internal field names (write "battery saver flag", not battery_saver_low_voltage).
+
 RESPOND ONLY with a valid, parseable JSON object in English, without markdown wrapping, without explanations outside JSON:
-{
+{{
   "diagnostic_status": "HEALTHY|DEGRADED|CRITICAL",
   "root_cause_domain": "NETWORK|OPTICAL_PHYSICAL|HARDWARE_POWER|ENVIRONMENT_POWER|AUDIO_NETWORK|ALGORITHM_CONFIGURATION|NONE",
   "confidence_score": 0.0,
-  "telemetry_findings": ["Max 2 concise, factual bullet points in English"],
-  "visual_findings": ["Max 2 concise visual observations on the frame in English"],
-  "recommended_mitigation": "Single direct and actionable resolution sentence based on Ring SOPs"
-}"""
+  "telemetry_findings": ["One short technical sentence per telemetry anomaly"],
+  "visual_findings": ["One short sentence per visual observation"],
+  "recommended_mitigation": "Plain-language message for the customer: what is happening, why it matters, what to do"
+}}"""
 
 STANDBY_VISUAL_FINDING = "Camera in low-power standby mode. Optical sensor powered down by design."
 
@@ -375,6 +436,7 @@ class SupportConcierge:
     ):
         self.retriever = KnowledgeRetriever(kb_path=kb_path)
         self._client   = None
+        self.last_bedrock_attempts = 0
         self.model_id = (
             model_id or os.getenv("BEDROCK_MODEL_ID", BEDROCK_DEFAULT_MODEL)
         ).strip()
@@ -501,6 +563,48 @@ class SupportConcierge:
                 "_parse_error": str(e),
             }
 
+    def _contract_problems(self, report: Dict[str, Any], anomaly: Dict[str, Any]) -> list[str]:
+        """Why a parsed model report breaks the contract (schema, severity, customer text)."""
+        if "_parse_error" in report:
+            return ["the answer was not a JSON object matching the diagnostic schema "
+                    f"({report['_parse_error']})"]
+        problems = []
+        if report.get("diagnostic_status") == "HEALTHY":
+            problems.append("diagnostic_status was HEALTHY although the pre-check found: " + anomaly["reason"])
+        problems += customer_text_problems(report["recommended_mitigation"])
+        problems += findings_problems(report)
+        return problems
+
+    def _reason_with_bedrock(self, user_prompt: str, image_base64: Optional[str],
+                             anomaly: Dict[str, Any]) -> tuple[Dict[str, Any], int]:
+        """
+        One Bedrock answer, plus one corrective retry when it breaks the contract (HEALTHY despite a
+        pre-check anomaly, invalid schema, or customer text with jargon / field names / electrical
+        work / too many words). A second violation, or a call error, raises RuntimeError so the caller
+        uses the local fallback. Returns the report and the number of Bedrock calls made.
+        """
+        self.last_bedrock_attempts = 1
+        raw = self._call_llm(user_prompt, image_base64)
+        report = self._parse_response(raw)
+        problems = self._contract_problems(report, anomaly)
+        if not problems:
+            return report, 1
+        print(f"      Bedrock answer rejected ({'; '.join(problems)}); asking once for a corrected answer.")
+        correction = (
+            "\n\n=== YOUR PREVIOUS ANSWER WAS REJECTED ===\n"
+            + "\n".join(f"- {p}" for p in problems)
+            + f"\nPrevious answer: {raw[:1500]}\n"
+            "Return the corrected JSON object only, following every rule above. The pre-check found "
+            f"{anomaly['level']} anomalies, so diagnostic_status must be DEGRADED or CRITICAL."
+        )
+        self.last_bedrock_attempts = 2
+        raw = self._call_llm(user_prompt + correction, image_base64)
+        report = self._parse_response(raw)
+        problems = self._contract_problems(report, anomaly)
+        if problems:
+            raise RuntimeError("Bedrock broke the diagnostic contract twice: " + "; ".join(problems))
+        return report, 2
+
     def _build_local_diagnostic(
         self,
         video_metrics: Dict[str, Any],
@@ -601,6 +705,7 @@ class SupportConcierge:
 
         if no_frame_reason:
             print(f"\n[1/4] No video frame available; telemetry-only diagnosis ({no_frame_reason})")
+            print("[2/4] No video frame available: no keyframe to extract")
             video_metrics = {
                 "file": None,
                 "resolution": None,
@@ -614,6 +719,7 @@ class SupportConcierge:
             image_base64 = None
         elif not camera_active:
             print("\n[1/4] Device in Standby (Camera inactive / optical sensor off by design)")
+            print("[2/4] Camera in standby: no frame to extract")
             video_metrics = {
                 "file": "standby_low_power_mode",
                 "resolution": "Camera in standby mode",
@@ -637,6 +743,7 @@ class SupportConcierge:
                   f"Sharpness: {video_metrics['sharpness_score']} | "
                   f"Brightness: {video_metrics.get('mean_brightness')} | "
                   f"Issues: {video_metrics.get('issues', [])}")
+            print("[2/4] Live keyframe re-encoded for the reasoning engine (Base64 JPEG, max 720px)")
         else:
             print(f"\n[1/4] Analyzing disk stream: {video_path} (scenario: {scenario})")
             analyzer = VideoAnalyzer(video_path)
@@ -663,7 +770,8 @@ class SupportConcierge:
         metrics = _telemetry_metrics(telemetry, video_metrics, video_available)
         if metrics["online"] is False:
             # Offline is conclusive evidence on its own; Bedrock cannot add data the device is not sending.
-            print("[3/4] Pre-check: Ring reports the device offline; skipping Bedrock.")
+            print("[3/4] Pre-check: the device is reported offline; skipping SOP retrieval")
+            print("[4/4] Offline verdict from the pre-check: reasoning engine not invoked")
             return finish({
                 "video_metrics": video_metrics,
                 "telemetry": telemetry,
@@ -677,7 +785,8 @@ class SupportConcierge:
         anomaly = self._precheck_anomaly(video_metrics, telemetry, video_available)
         missing = _missing_essential_metrics(metrics)
         if anomaly is None and missing:
-            print(f"[3/4] Pre-check: no anomaly, but essential metrics are unavailable: {missing}")
+            print(f"[3/4] Pre-check: no anomaly, but essential metrics are unavailable: {missing}; skipping SOP retrieval")
+            print("[4/4] Not enough measured data: reasoning engine not invoked")
             report = _insufficient_data_diagnostic(missing, video_available)
             report["visual_findings"] = [no_video_finding] if no_video_finding else []
             return finish({
@@ -691,12 +800,17 @@ class SupportConcierge:
                 "_model": None,
             })
         if anomaly is None:
-            print("[3/4] Pre-check: telemetry and video metrics are nominal; skipping Bedrock.")
+            print("[3/4] Pre-check nominal: skipping SOP retrieval")
+            print("[4/4] No anomaly: reasoning engine not invoked")
+            report = _nominal_diagnostic(video_available)
+            if no_video_finding:
+                report["visual_findings"] = [no_video_finding]
             return finish({
                 "video_metrics": video_metrics,
                 "telemetry": telemetry,
                 "retrieved_articles": [],
-                "diagnostic_result": None,
+                "diagnostic_result": report,
+                "severity_level": severity.GREEN,
                 "analysis_skipped": True,
                 "skip_reason": (
                     "No anomaly detected in measured telemetry; no video frame was analyzed."
@@ -707,7 +821,7 @@ class SupportConcierge:
                 "_model": None,
             })
 
-        print("[3/4] Retrieving Ring troubleshooting procedures...")
+        print(f"[3/4] Pre-check: {anomaly['level']} ({anomaly['reason']}); retrieving Ring troubleshooting procedures...")
         articles = self.retriever.retrieve_guidance(video_metrics, telemetry)
         print(f"      Retrieved SOPs: {len(articles)} ({[a['id'] for a in articles]})")
 
@@ -779,6 +893,19 @@ class SupportConcierge:
                 f"- Detected issues: {video_metrics.get('issues', [])}"
             )
 
+        precheck_lines = []
+        for a in anomaly["anomalies"]:
+            if a["metric"] == "video":
+                issues = "; ".join(_optical_issues(video_metrics)) or a["finding"]
+                precheck_lines.append(f"- {a['level']}: {a['reason']} (video analyzer: {issues})")
+            else:
+                precheck_lines.append(f"- {a['level']}: {severity.describe(a)}. To leave this band it must be "
+                                      f"{severity.next_level_target(a)}.")
+        precheck_section = "\n".join(precheck_lines)
+        kb_section = json.dumps(articles, indent=2, ensure_ascii=False) if articles else (
+            "NONE: no procedure matched. Give a conservative, generic mitigation; it is reported as "
+            "generated, not from the knowledge base.")
+
         user_prompt = f"""RING SUPPORT CASE — MULTIMODAL DIAGNOSTIC
 - {standby_note}
 
@@ -809,32 +936,34 @@ class SupportConcierge:
 - RTT            : {show(metrics['rtt_ms'], 'webrtc_stats', 'current_round_trip_time', ' ms', '.1f')}
 - Essential metrics unavailable: {', '.join(missing) if missing else 'none'}
 
+=== PRE-CHECK ANOMALIES (deterministic, severity table: {severity.PROVENANCE}) ===
+{precheck_section}
+- Worst level: {anomaly['level']} (the report severity). diagnostic_status can NOT be HEALTHY.
+
 === APPLICABLE TROUBLESHOOTING PROCEDURES (project KB, RAG) ===
-{json.dumps(articles, indent=2, ensure_ascii=False)}
+{kb_section}
 
 {visual_instruction}"""
 
         print(f"[4/4] Invoking primary reasoning engine (BEDROCK / {self.model_id})...")
         provider = "bedrock"
+        mitigation_source = MITIGATION_SOURCE_KB if articles else MITIGATION_SOURCE_GENERATED
+        bedrock_attempts = 0
         try:
-            raw_response = self._call_llm(user_prompt, image_base64)
-            diagnostic_result = self._parse_response(raw_response)
-            if "_parse_error" in diagnostic_result:
-                raise RuntimeError("Bedrock returned a response that did not match the diagnostic schema.")
-            if diagnostic_result.get("diagnostic_status") == "HEALTHY":
-                raise RuntimeError(
-                    "Bedrock returned HEALTHY despite a pre-check anomaly: "
-                    + anomaly["reason"]
-                )
+            diagnostic_result, bedrock_attempts = self._reason_with_bedrock(user_prompt, image_base64, anomaly)
         except RuntimeError as exc:
             provider = "local_fallback"
-            print(f"      Bedrock unavailable; using deterministic local fallback: {exc}")
+            bedrock_attempts = self.last_bedrock_attempts   # requests made before giving up
+            print(f"      Bedrock unavailable; using deterministic local fallback (mock-up): {exc}")
             diagnostic_result = self._build_local_diagnostic(
                 video_metrics=video_metrics,
                 telemetry=telemetry,
                 articles=articles,
                 camera_active=video_available,
             )
+            dominant = _assess(_telemetry_metrics(telemetry, video_metrics, video_available),
+                               video_metrics, video_available)["dominant"]
+            mitigation_source = _fallback_mitigation(dominant, articles)[1] if dominant else None
 
         if no_video_finding:
             diagnostic_result["visual_findings"] = [no_video_finding]
@@ -860,6 +989,8 @@ class SupportConcierge:
             "diagnostic_result": diagnostic_result,
             "severity_level":    anomaly["level"],
             "severity_override": severity_override,
+            "mitigation_source": mitigation_source,
+            "bedrock_attempts":  bedrock_attempts,
             "_provider":         provider,
             "_model":            self.model_id if provider == "bedrock" else None,
         })
@@ -868,6 +999,13 @@ class SupportConcierge:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+CLI_PROVIDER_LABELS = {
+    "bedrock": "AWS Bedrock (Claude)",
+    "local_fallback": "Local fallback (mock-up; Bedrock unavailable or its answer was rejected)",
+    "precheck": "Pre-check (deterministic; Bedrock not called)",
+}
+
 
 def main():
     import sys
@@ -913,10 +1051,14 @@ def main():
         keyframe_second=args.second,
     )
 
+    report = result["diagnostic_result"]
     print("\n" + "=" * 65)
     print("  AGENT DIAGNOSTIC REPORT (JSON)")
     print("=" * 65)
-    print(json.dumps(result["diagnostic_result"], indent=2, ensure_ascii=False))
+    print(json.dumps({**report, "_provider": result["_provider"], "_model": result.get("_model")},
+                     indent=2, ensure_ascii=False))
+    print(f"\nProblem type: {severity.DOMAIN_LABELS.get(report['root_cause_domain'], report['root_cause_domain'])}"
+          f" | Engine: {CLI_PROVIDER_LABELS.get(result['_provider'], result['_provider'])}")
 
 
 if __name__ == "__main__":
