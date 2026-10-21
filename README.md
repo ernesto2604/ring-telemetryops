@@ -411,7 +411,9 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
   keyframe, the metrics, the pre-check anomalies with their levels and the retrieved KB articles, and
   writes the findings and a plain-language mitigation. It is the most realistic and precise mode.
   Its answer must respect the report contract: valid schema, not HEALTHY when the pre-check found an
-  anomaly, and a customer mitigation of at most 60 words without technical terms, KB IDs, internal field
+  anomaly, and a customer mitigation of at most 60 words without technical terms, KB IDs, electrical
+  specifications (volts, amps, VA), visual causes the image does not show (protective film, condensation,
+  glare), internal field
   names or electrical work. A violation gets **one** corrective retry; a second violation, or a call
   error (credentials, permissions, region, throttling), uses the local fallback.
 * **Local fallback (mock-up)** (`_provider: "local_fallback"`) is a deterministic stand-in that validates
