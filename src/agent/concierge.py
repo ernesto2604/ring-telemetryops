@@ -69,6 +69,11 @@ CUSTOMER_JARGON_SHOWN = ("RSSI", "dBm", "jitter", "packet loss", "kbps", "FPS", 
 ELECTRICAL_DIY = re.compile(
     r"\b(breakers?|multimeter|voltmeter|rewir\w*|replace (?:the |your )?transformer|"
     r"(?:measure|test|check) (?:the |its )?(?:voltage|wiring))\b", re.I)
+# Electrical specifications (e.g. "5V/2A charger", "16 VAC", "30 VA"): manufacturer requirements the
+# project cannot verify, so they never reach the customer text (D2).
+_ELECTRICAL_SPEC = re.compile(r"\b\d+(?:\.\d+)?\s?(?:v|va|vac|a|mah|w)\b", re.I)
+# Visual causes the analyzer never detects; suggesting them is speculation the image does not support (N30).
+_UNSEEN_CAUSES = re.compile(r"\b(protective (?:shipping )?film|condensation|fog(?:ging)?|sun glare|glare)\b", re.I)
 _INTERNAL_FIELD = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _KB_ID = re.compile(r"\bKB-RING-\d+\b", re.I)
 
@@ -86,6 +91,10 @@ def customer_text_problems(text: str) -> list[str]:
         problems.append("recommended_mitigation cites a knowledge base article ID")
     if _INTERNAL_FIELD.search(text):
         problems.append("recommended_mitigation contains an internal field name")
+    if _UNSEEN_CAUSES.search(text):
+        problems.append("recommended_mitigation suggests causes the image does not show (film, condensation, glare)")
+    if _ELECTRICAL_SPEC.search(text):
+        problems.append("recommended_mitigation quotes an electrical specification (volts, amps, VA)")
     if ELECTRICAL_DIY.search(text):
         problems.append("recommended_mitigation asks the customer to do electrical work")
     return problems
@@ -134,12 +143,13 @@ CRITICAL DIAGNOSTIC RULES:
 - THRESHOLDS YOU QUOTE: When you say how far a metric must improve, quote ONLY the boundary of its next better level given in the case (for example, Poor RSSI must reach "at or above -75 dBm"). Never invent other limits.
 - MANUFACTURER REQUIREMENTS: Do not state Ring requirements (voltages, VA ratings, device models, accessories) unless they appear in a retrieved knowledge base article, and then call them "reference values (unverified)".
 - ELECTRICAL SAFETY: Never tell the customer to do electrical work: no switching or resetting circuit breakers, no multimeter or voltage measurements, no rewiring, no replacing the transformer. For wiring or transformer problems tell them to contact a qualified electrician or Ring Support.
-- VISUAL EVIDENCE: Recommend only what the image and metrics support. For a blurry lens do not suggest condensation, protective film or sun glare unless the image shows them.
+- VISUAL EVIDENCE: Recommend only what the image and metrics support. For a blurry lens do not mention condensation, protective film, obstructions or sun glare unless the image clearly shows them; do not list them as possibilities either.
+- STANDBY IS NORMAL: Camera standby is the doorbell's normal idle state. Never tell the customer the device entered standby because of a problem.
 - NO KNOWLEDGE BASE MATCH: If no troubleshooting procedure was retrieved, give a conservative, generic mitigation (check the device in the Ring app, contact Ring Support) and do not invent a specific procedure.
 - EVIDENCE: Only telemetry labelled ring_partner_api comes from Ring. The numeric rules above are project diagnostic heuristics, not Ring requirements. The troubleshooting procedures are this project's knowledge base: content with evidence_level "unverified", verification "unverified" or source_verification "pending" is not confirmed, so never cite them as official Ring documentation and never state that a Ring API endpoint or capability exists because a procedure mentions it.
 
 WHO READS EACH FIELD:
-- "recommended_mitigation" is the notification the customer reads in the Ring app. Write plain, everyday English, at most {CUSTOMER_TEXT_MAX_WORDS - 10} words, in this order: what is happening, why it matters, what to do. Use no technical terms (no {', '.join(CUSTOMER_JARGON_SHOWN)}), no knowledge base article IDs, no internal field names, and numbers only when they help the customer. Settings that live in the Ring app are written as "in the Ring app". When a retrieved article has customer_messages, start from the message that matches the problem and adapt it to the evidence.
+- "recommended_mitigation" is the notification the customer reads in the Ring app. Write plain, everyday English, at most {CUSTOMER_TEXT_MAX_WORDS - 10} words, in this order: what is happening, why it matters, what to do. Use no technical terms (no {', '.join(CUSTOMER_JARGON_SHOWN)}), no knowledge base article IDs, no internal field names, no electrical specifications (volts, amps, VA, charger ratings), and numbers only when they help the customer. Settings that live in the Ring app are written as "in the Ring app". When a retrieved article has customer_messages, start from the message that matches the problem and adapt it to the evidence.
 - "telemetry_findings" and "visual_findings" are for a support technician: one short factual sentence per anomaly (technical terms allowed), but no internal field names (write "battery saver flag", not battery_saver_low_voltage).
 
 RESPOND ONLY with a valid, parseable JSON object in English, without markdown wrapping, without explanations outside JSON:
@@ -496,7 +506,8 @@ class SupportConcierge:
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "system": SYSTEM_PROMPT,
-            "max_tokens": 512,
+            # One finding per anomaly can be long (6+ anomalies): 512 tokens truncated the JSON in live runs.
+            "max_tokens": 1024,
             "temperature": 0.1,
             "messages": [{"role": "user", "content": content}],
         })

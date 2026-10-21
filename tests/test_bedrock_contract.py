@@ -141,11 +141,16 @@ def test_prompt_forbids_electrical_work_and_explains_the_backup_battery():
     assert "Never call this inconsistent and never suggest stale telemetry" in PROMPT
 
 
+def test_bedrock_request_leaves_room_for_one_finding_per_anomaly():
+    import inspect
+    assert '"max_tokens": 1024' in inspect.getsource(SupportConcierge._call_bedrock)
+
+
 def test_prompt_states_the_customer_text_rules():
     assert f"at most {CUSTOMER_TEXT_MAX_WORDS - 10} words" in PROMPT
     assert "what is happening, why it matters, what to do" in PROMPT
     assert "\"in the Ring app\"" in PROMPT
-    assert "For a blurry lens do not suggest condensation, protective film or sun glare" in PROMPT
+    assert "For a blurry lens do not mention condensation, protective film, obstructions or sun glare" in PROMPT
 
 
 def test_case_lists_precheck_anomalies_with_level_and_next_target():
@@ -181,6 +186,9 @@ def test_bedrock_mitigation_with_kb_articles_is_labelled_knowledge_base():
     ("Your transformer_voltage_vac is low.", "internal field name"),
     ("Toggle the transformer breaker.", "electrical work"),
     ("Measure the voltage with a multimeter.", "electrical work"),
+    ("Recharge it with a 5V/2A charger.", "electrical specification"),
+    ("Check that the protective shipping film was removed.", "does not show"),
+    ("Your transformer needs 16 VAC.", "electrical specification"),
 ])
 def test_customer_text_problems(text, problem):
     assert any(problem in p for p in customer_text_problems(text))
