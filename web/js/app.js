@@ -696,6 +696,8 @@ function showReportProvider(provider) {
 const MITIGATION_SOURCE_LABELS = {
   knowledge_base: 'Project knowledge base (Ring-informed, unverified)',
   generated_no_kb_match: 'Generated, no KB match',
+  knowledge_base_deterministic: 'Deterministic KB message (Bedrock text rejected twice)',
+  generic_deterministic: 'Deterministic generic message (Bedrock text rejected twice, no KB match)',
 };
 
 function renderResult(diag, data = {}) {
