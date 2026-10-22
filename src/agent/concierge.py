@@ -1198,6 +1198,17 @@ class SupportConcierge:
                            model_status, anomaly["level"], anomaly["reason"])
             diagnostic_result["diagnostic_status"] = anomaly["level"]
 
+        # T16: the root-cause domain (the label the customer sees) is the pre-check's dominant domain,
+        # as for the heartbeat incident family. Partner reports are left as they were.
+        domain_source = "precheck" if provider == "local_fallback" else "model"
+        model_domain = diagnostic_result.get("root_cause_domain")
+        partner = telemetry.get("_source") == "ring_partner_api"
+        if provider == "bedrock" and not partner and model_domain != anomaly["domain"]:
+            domain_source = "precheck_override"
+            logger.warning("Replacing model domain %s with the pre-check domain %s (%s)",
+                           model_domain, anomaly["domain"], anomaly["reason"])
+            diagnostic_result["root_cause_domain"] = anomaly["domain"]
+
         print(f"      Diagnosis: {diagnostic_result.get('diagnostic_status')} | "
               f"Domain: {diagnostic_result.get('root_cause_domain')} | "
               f"Confidence: {diagnostic_result.get('confidence_score')}")
@@ -1209,6 +1220,9 @@ class SupportConcierge:
             "diagnostic_result": diagnostic_result,
             "severity_level":    anomaly["level"],
             "severity_override": severity_override,
+            "domain_source":     domain_source,
+            "domain_override":   {"model": model_domain, "deterministic": anomaly["domain"]}
+                                 if domain_source == "precheck_override" else None,
             "mitigation_source": mitigation_source,
             "bedrock_attempts":  bedrock_attempts,
             "_provider":         provider,

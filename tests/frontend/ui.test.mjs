@@ -1611,3 +1611,15 @@ test('T3 / C2: the simulator device card hides the ID; Partner shows it', () => 
   page.run(`updateMetricCards(${JSON.stringify(PLAYGROUND_TELEMETRY)})`);
   assert.equal(page.el('dev-id').style.display, '');
 });
+
+test('T16: Technical details show a root-cause domain replaced by the pre-check', () => {
+  const page = loadPage();
+  page.run(`renderResult(${JSON.stringify(NETWORK_REPORT.diagnostic_result)},
+    ${JSON.stringify({ ...NETWORK_REPORT, domain_source: 'precheck_override',
+                       domain_override: { model: 'ENVIRONMENT_POWER', deterministic: 'NETWORK' } })})`);
+  assert.equal(page.el('diag-domain-text').textContent, 'Network Issue (Wi-Fi / Upstream)');
+  assert.equal(page.el('tech-domain').textContent, 'NETWORK (model said ENVIRONMENT_POWER; replaced by the pre-check)');
+
+  page.run(`renderResult(${JSON.stringify(NETWORK_REPORT.diagnostic_result)}, ${JSON.stringify(NETWORK_REPORT)})`);
+  assert.equal(page.el('tech-domain').textContent, 'NETWORK');
+});

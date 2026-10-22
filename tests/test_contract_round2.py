@@ -338,3 +338,53 @@ def test_dirty_lens_prompt_drops_the_sunlight_mounting_action():
 ])
 def test_scene_words_inside_other_words_are_not_rejected(finding):
     assert findings_problems({"telemetry_findings": [], "visual_findings": [finding]}) == []
+
+
+# ---------------------------------------------------------------------------
+# T16: the root-cause domain comes from the pre-check, like the severity
+# ---------------------------------------------------------------------------
+
+def run_domain(model_domain, t, frame=None, status="DEGRADED"):
+    agent = SupportConcierge()
+    agent._call_llm = Script(reply(status, model_domain))
+    kwargs = {"frame_base64": as_canvas_jpeg(frame), "camera_active": True} if frame is not None \
+        else {"camera_active": False}
+    return agent.process_stream(telemetry=t, **kwargs)
+
+
+def test_wrong_model_domain_is_replaced_by_the_precheck_domain(caplog):
+    result = run_domain("ENVIRONMENT_POWER", telemetry(rssi=-84))
+    assert result["diagnostic_result"]["root_cause_domain"] == "NETWORK"
+    assert result["domain_source"] == "precheck_override"
+    assert result["domain_override"] == {"model": "ENVIRONMENT_POWER", "deterministic": "NETWORK"}
+    assert concierge_module.severity.DOMAIN_LABELS["NETWORK"] == "Network Issue (Wi-Fi / Upstream)"
+    assert "Replacing model domain ENVIRONMENT_POWER with the pre-check domain NETWORK" in caplog.text
+
+
+def test_matching_model_domain_is_kept_without_warning(caplog):
+    result = run_domain("NETWORK", telemetry(rssi=-84))
+    assert result["domain_source"] == "model" and result["domain_override"] is None
+    assert "Replacing model domain" not in caplog.text
+
+
+@pytest.mark.parametrize("t, frame, domain", [
+    (telemetry(power_mode="wired", transformer_voltage_vac=0.0), black_frame(), "HARDWARE_POWER"),
+    (telemetry(), dirty_lens(sample_frame()), "OPTICAL_PHYSICAL"),
+    (telemetry(power_mode="battery", battery_percentage=20), None, "HARDWARE_POWER"),
+    # Several families: RSSI Poor (DEGRADED) and battery 5 % (CRITICAL) -> the worst level wins.
+    (telemetry(power_mode="battery", battery_percentage=5, rssi=-84), None, "HARDWARE_POWER"),
+    # Same level in two families: table order (power before network), as the heartbeat does.
+    (telemetry(power_mode="battery", battery_percentage=20, rssi=-84), None, "HARDWARE_POWER"),
+], ids=["power_cut_black_frame", "dirty_lens", "battery_low", "worst_level_wins", "tie_table_order"])
+def test_final_domain_is_the_dominant_precheck_domain(t, frame, domain):
+    result = run_domain("NONE", t, frame)
+    assert result["diagnostic_result"]["root_cause_domain"] == domain
+    assert result["domain_source"] == "precheck_override"
+
+
+def test_local_fallback_domain_is_the_precheck_domain():
+    agent = SupportConcierge()
+    agent._call_llm = Script(RuntimeError("off"))
+    result = agent.process_stream(telemetry=telemetry(rssi=-84), camera_active=False)
+    assert result["diagnostic_result"]["root_cause_domain"] == "NETWORK"
+    assert result["domain_source"] == "precheck"

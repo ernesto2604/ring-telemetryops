@@ -731,6 +731,8 @@ function renderResult(diag, data = {}) {
       ? data.severity_level + (data.severity_override
         ? ` (model said ${data.severity_override.model}; replaced by the severity table)` : '')
       : status,
+    'tech-domain': domain + (data.domain_override
+      ? ` (model said ${data.domain_override.model}; replaced by the pre-check)` : ''),
     'tech-sops': articles.length ? articles.map(a => a.id).join(', ') : 'None retrieved',
     'tech-mitigation-source': MITIGATION_SOURCE_LABELS[data.mitigation_source]
       || (data._provider === 'precheck' ? 'Pre-check (no mitigation needed)' : '—'),
@@ -772,7 +774,7 @@ function ticketText() {
   const line = id => (document.getElementById(id) || {}).textContent || '—';
   return [
     `Status: ${diag.diagnostic_status} (${domainLabel(diag.root_cause_domain)})`,
-    `Root cause domain: ${diag.root_cause_domain}`,
+    `Root cause domain: ${line('tech-domain')}`,
     `Confidence: ${Math.round((diag.confidence_score || 0) * 100)}%`,
     `Engine: ${line('tech-provider')} | Model: ${line('tech-model')}`,
     `Severity level: ${line('tech-level')}`,

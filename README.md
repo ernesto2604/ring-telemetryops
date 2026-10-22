@@ -413,6 +413,10 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
 * **Bedrock (realistic mode)** is the diagnosis this project is built around: Claude Haiku 4.5 reads the
   keyframe, the metrics, the pre-check anomalies with their levels and the retrieved KB articles, and
   writes the findings and a plain-language mitigation. It is the most realistic and precise mode.
+  Severity and root-cause domain are derived from the deterministic pre-check; the model only provides
+  the reasoning. A different model domain is replaced by the pre-check's dominant domain (worst level,
+  then table order, as for the heartbeat incident) and reported as `domain_source: "precheck_override"`
+  under Technical details (`"model"` when they agree, `"precheck"` for the local fallback).
   Its answer must respect the report contract (`src/agent/concierge.py`):
   * valid schema, and not HEALTHY when the pre-check found an anomaly;
   * a customer mitigation of at most 60 words without technical terms, KB IDs, internal field names,
