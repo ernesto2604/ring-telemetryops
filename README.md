@@ -122,7 +122,8 @@ Change a value only in the JSON file (and this table).
 * **Triggers (Ring Chime / Ding, PIR Motion, Live View):** the session is analyzed at once, without
   waiting for the counter. The backend pre-check checks the telemetry and the captured frame: with a
   problem the report is titled "Issue during Doorbell Press / Motion Detection / Live View"; without one
-  Bedrock is not called and the UI says "All good". Triggers fired close together share one analysis.
+  Bedrock is not called and the UI shows and notifies nothing (the API and CLI still return an explicit
+  `HEALTHY`). Triggers fired close together share one analysis.
 * **No duplicate alerts:** a trigger marks the open incident as diagnosed, so the heartbeat does not
   report it again when it reaches 3/3, and a new analysis of an incident whose alert is already shown
   updates the report without a second notification.

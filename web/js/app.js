@@ -438,7 +438,7 @@ let pendingEventDiagnosis = null;
 /**
  * A trigger (Ring Chime, PIR Motion, Live View) analyzes the session at once, without the heartbeat
  * counter: the backend pre-check checks the telemetry and the captured frame, and Bedrock is only
- * invoked when it finds a problem (otherwise the UI says "All good"). Triggers fired close together
+ * invoked when it finds a problem (otherwise the UI stays silent: no alert, card or message). Triggers fired close together
  * share one analysis, so one event never produces two reports.
  */
 function checkEventSessionDiagnostics(reason) {
@@ -535,7 +535,8 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
 
     const diag = data.diagnostic_result;
     if (data.analysis_skipped || !diag || diag.diagnostic_status === 'HEALTHY') {
-      showAllGood(data);
+      // D11: an automatic analysis that finds nothing stays silent; only "Analyze now" answers explicitly.
+      if (triggerOrigin === 'manual') showNoIssues(data);
       return;
     }
 
@@ -563,12 +564,12 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
   }
 }
 
-/** Nominal result (pre-check, no Bedrock call): said explicitly instead of leaving the screen silent. */
-function showAllGood(data) {
+/** Nominal answer to an explicit "Analyze now" (pre-check, no Bedrock call). */
+function showNoIssues(data) {
   const noVideo = data.video_analysis && data.video_analysis.available === false;
   const message = noVideo
-    ? '✅ All good: no issue in the measured telemetry (no video frame analyzed). Bedrock was not called.'
-    : '✅ All good: no issues detected. Bedrock was not called.';
+    ? '✅ No issue in the measured telemetry (no video frame analyzed). Bedrock was not called.'
+    : '✅ No issues detected. Bedrock was not called.';
   showToast(message, 'success');
   // An open incident's report stays on screen until the heartbeat resolves it.
   if (state.heartbeatAlertActive) return;
@@ -709,7 +710,7 @@ function renderResult(diag, data = {}) {
   const bar = document.getElementById('diag-status-bar');
   if (bar) bar.className = 'diagnostic-status ' + status;
   document.getElementById('diag-icon').textContent        = icons[status] || '❓';
-  document.getElementById('diag-status-text').textContent = healthy ? 'All good' : status;
+  document.getElementById('diag-status-text').textContent = healthy ? 'Healthy' : status;
   document.getElementById('diag-domain-text').textContent = healthy ? 'No issues detected' : domainLabel(domain);
 
   document.getElementById('conf-fill').style.width = confidence + '%';

@@ -1411,20 +1411,42 @@ for (const [label, call, name] of [
     assert.equal(page.analyzeCount(), 1);
   });
 
-  test(`S9 / B2: ${label} without a problem says "All good" and calls no Bedrock`, async () => {
+  test(`S9 / B2 / D11: ${label} without a problem shows and notifies nothing, and calls no Bedrock`, async () => {
     const page = triggerPage(NOMINAL_REPORT);
-
-    page.run(call);
+    await page.run(call);
     await settle(); await settle();
-
-    assert.equal(page.analyzeCount(), 1);              // the backend pre-check answers; no Bedrock call
-    assert.equal(page.bannerShown(), false);
-    assert.equal(page.el('diag-status-text').textContent, 'All good');
-    assert.equal(page.el('diag-domain-text').textContent, 'No issues detected');
-    assert.ok(page.toasts.some(t => /All good/.test(t.msg)));
-    assert.match(page.el('engine-provider').textContent, /pre-check/);
+    assertSilentNominal(page);
   });
 }
+
+/** D11: a nominal automatic analysis leaves no alert, card, toast or engine label behind. */
+function assertSilentNominal(page) {
+  assert.equal(page.analyzeCount(), 1);                // the backend pre-check answers; no Bedrock call
+  assert.equal(page.bannerShown(), false);
+  assert.notEqual(page.el('result-content').style.display, '');
+  assert.equal(page.el('diag-status-text').textContent, '');
+  assert.ok(!page.toasts.some(t => /All good|No issue|Bedrock/i.test(t.msg)));
+  assert.doesNotMatch(page.el('engine-provider').textContent, /pre-check/);
+}
+
+test('E9 / D11: Night mode plus Live View without a problem shows and notifies nothing', async () => {
+  const page = triggerPage(NOMINAL_REPORT);
+  page.run('toggleNightMode();');
+  await page.run('toggleLiveView()');
+  await settle(); await settle();
+  assertSilentNominal(page);
+});
+
+test('D11: an explicit "Analyze now" still answers a nominal result (Partner path unchanged)', async () => {
+  const page = loadPage({ '/api/analyze': { status: 200, body: NOMINAL_REPORT } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  await page.run("triggerAutonomousDiagnosis('manual')");
+
+  assert.ok(page.toasts.some(t => /No issues detected/.test(t.msg)));
+  assert.ok(!page.toasts.some(t => /All good/.test(t.msg)));
+  assert.equal(page.el('diag-status-text').textContent, 'Healthy');
+  assert.equal(page.el('result-content').style.display, '');
+});
 
 test('B3: a Ding while the camera is starting shares one analysis (no duplicate report)', async () => {
   const page = triggerPage();
@@ -1549,4 +1571,43 @@ test('E6: Night mode is a normal condition, outside the fault injection grid', (
   const night = html.indexOf('id="hw-btn-night"');
   assert.ok(faults < normal && normal < night);
   assert.match(html, /Night mode \(IR LEDs\)/);
+});
+
+test('T2 / C7: the Transformer Cut button follows the transformer slider and Reset', () => {
+  const page = loadPage();
+  const active = () => page.el('hw-btn-power').classList.contains('active-warn');
+
+  page.run('togglePowerCut();');
+  assert.equal(active(), true);
+  assert.equal(page.run('state.transformer'), 0);
+  assert.equal(page.el('sl-transformer').value, 0);
+
+  page.run("updateSlider('transformer', '18');");
+  assert.equal(active(), false);
+  assert.equal(page.run('state.hardwareFaults.powerCut'), false);
+
+  page.run("updateSlider('transformer', '0.5');");    // inside the table's power-cut band (<= 0.5 V)
+  assert.equal(active(), true);
+  page.run("updateSlider('transformer', '1');");
+  assert.equal(active(), false);
+
+  page.run('togglePowerCut(); resetTelemetryDefaults();');
+  assert.equal(active(), false);
+  assert.equal(page.run('state.hardwareFaults.powerCut'), false);
+});
+
+test('T3 / C2: the simulator device card hides the ID; Partner shows it', () => {
+  const html = readFileSync(new URL('web/index.html', ROOT), 'utf8');
+  assert.match(html, /id="dev-id" style="display:none;"/);
+  assert.match(html, /id="c-devid" value="a1b2c3d4e5f6"/);   // kept in the configuration field
+
+  const page = loadPage();
+  page.el('dev-id').style.display = 'none';
+  page.run("state.ringSource = 'simulator'; state.ringMode = 'MOCK';");
+  page.run('updateMetricCards({ device_health: { rssi: -48, battery_percentage: 100 }, webrtc_stats: {} }); updateDeviceLiveBadges();');
+  assert.equal(page.el('dev-id').style.display, 'none');
+
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  page.run(`updateMetricCards(${JSON.stringify(PLAYGROUND_TELEMETRY)})`);
+  assert.equal(page.el('dev-id').style.display, '');
 });

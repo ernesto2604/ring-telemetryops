@@ -166,6 +166,13 @@ function updateSlider(key, val) {
   const lbl = document.getElementById('lbl-' + key);
   if (lbl) lbl.textContent = labels[key];
 
+  if (key === 'transformer') {
+    // The Cut button mirrors the slider: active only inside the table's power-cut band (CRITICAL).
+    const cut = classifyMetric('transformer', v, { power_mode: 'wired' })?.level === 'CRITICAL';
+    state.hardwareFaults.powerCut = cut;
+    document.getElementById('hw-btn-power')?.classList.toggle('active-warn', cut);
+  }
+
   if (key === 'transformer' && state.powerMode === 'wired') {
     const batSl   = document.getElementById('sl-battery');
     const batItem = document.getElementById('item-battery');
@@ -417,7 +424,7 @@ function updatePartnerBadges(t) {
   const nameEl = document.getElementById('dev-name');
   if (nameEl) nameEl.textContent = (t && t.device_name) || `Device name ${METRIC_NOT_AVAILABLE}`;
   const idEl = document.getElementById('dev-id');
-  if (idEl) idEl.textContent = `ID: ${(t && t.device_id) || METRIC_NOT_AVAILABLE}`;
+  if (idEl) { idEl.textContent = `ID: ${(t && t.device_id) || METRIC_NOT_AVAILABLE}`; idEl.style.display = ''; }
   const capsEl = document.getElementById('partner-capabilities');
   if (capsEl) {
     const caps = t && t.capabilities;
