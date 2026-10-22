@@ -9,6 +9,21 @@ An autonomous diagnostic agent and interactive Digital Twin designed for smart v
 
 Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring Track + AWS Builder + Open Source Mini Challenges).
 
+## Hackathon submission
+
+* **Track:** Ring. **Mini challenges:** AWS Builder and Open Source (MIT license, see [LICENSE](LICENSE)).
+* **Ring:** a Digital Twin simulator of the Ring Video Doorbell 4 and the read-only Ring Partner API
+  mode (`RING_DATA_SOURCE=partner`: device status and capabilities).
+* **AWS service used:** Amazon Bedrock with Anthropic Claude Haiku 4.5
+  (`us.anthropic.claude-haiku-4-5-20251001-v1:0`, region `us-east-1`). It reasons over a camera
+  keyframe, deterministic OpenCV metrics, the pre-check anomalies and the retrieved troubleshooting
+  procedures. Severity and root-cause domain are decided by the deterministic pre-check, the answer is
+  validated against a report contract with one corrective retry, and a labelled local fallback keeps
+  the same schema when Bedrock is unavailable. Details: [Local fallback (mock-up) vs Bedrock (realistic
+  mode)](#local-fallback-mock-up-vs-bedrock-realistic-mode).
+* **Development workflow:** the project was built with AI coding agents (Claude Code) under human
+  direction, with a test suite (pytest and Node) and live verification against Bedrock.
+
 ---
 
 ## Architecture Overview
@@ -59,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as described in the [Ring developer documentation](https://developer.amazon.com/docs/ring/api-documentation.html) cited by the client (not re-verified for this release). Ring's API documentation also lists the Event History (`GET /v1/history/devices/{device_id}/events`), Device Configuration (`GET /v1/devices/{device_id}/configurations`) and WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) endpoints; this project does not implement them. The KB marks those three paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses are telemetry-only: Ring image retrieval, live video (WHEP), motion events and webhooks are **not implemented**, and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). Ring's API documentation also lists the Event History (`GET /v1/history/devices/{device_id}/events`), Device Configuration (`GET /v1/devices/{device_id}/configurations`) and WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) endpoints; this project does not implement them. The KB marks those three paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses are telemetry-only: Ring image retrieval, live video (WHEP), motion events and webhooks are **not implemented**, and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -142,12 +157,13 @@ Change a value only in the JSON file (and this table).
   fixed value **0.86** (a mock-up constant), and the pre-check's nominal verdict reports 1.0 (every
   measured metric is GREEN).
 
-### Defaults pending confirmation
+### Design decisions
 
-These values were set by default and are pending confirmation by the project owner: battery low band
-10-29 % (O1), transformer bands 0.5 / 12 V (O2), transport metrics without a critical level (O3), and
-the confidence handling above (O4). The Partner "offline" rule (3 consecutive reads) is out of scope of
-the severity table (O8) and keeps its own settings.
+Some bands are product decisions rather than documented facts: the battery low band (10-29 %), the
+transformer bands (0.5 V and 12 V), the transport metrics without a CRITICAL level, and the
+confidence handling above. They all live in `src/config/severity_thresholds.json`, so each one can be
+changed in a single place. The Partner "offline" rule (3 consecutive reads) is outside the severity
+table and keeps its own settings.
 
 ### Knowledge base sources
 
