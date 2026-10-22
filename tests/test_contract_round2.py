@@ -314,3 +314,27 @@ def test_first_invalid_second_valid_uses_the_second_answer_as_is():
 def test_ui_labels_the_deterministic_mitigation_source():
     app_js = open("web/js/app.js", encoding="utf-8").read()
     assert "knowledge_base_deterministic: 'Deterministic KB message (Bedrock text rejected twice)'" in app_js
+
+
+# ---------------------------------------------------------------------------
+# Tanda 3 live verification: findings from real Bedrock answers
+# ---------------------------------------------------------------------------
+
+def test_live_v8_mounting_advice_about_obstruction_or_reflection_is_rejected():
+    observed = ("Your doorbell's picture is blurry. Gently clean the camera lens with a soft, dry cloth, then check "
+                "the live view in the Ring app. If the image remains unclear, adjust the mounting angle to ensure "
+                "the lens is not obstructed or pointed at a reflective surface.")
+    assert any("does not show" in p for p in customer_text_problems(observed))
+
+
+def test_dirty_lens_prompt_drops_the_sunlight_mounting_action():
+    case, _ = prompt_for(*PROMPT_CASES["dirty_lens"])
+    assert "direct sunlight" not in case
+
+
+@pytest.mark.parametrize("finding", [
+    "Capture shows a sharp, well-exposed outdoor frame with good capacity for detail.",
+    "Doorbell camera frame has a strong magenta cast; no doorway-level banding.",
+])
+def test_scene_words_inside_other_words_are_not_rejected(finding):
+    assert findings_problems({"telemetry_findings": [], "visual_findings": [finding]}) == []

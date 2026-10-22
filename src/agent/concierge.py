@@ -73,7 +73,9 @@ ELECTRICAL_DIY = re.compile(
 # project cannot verify, so they never reach the customer text (D2).
 _ELECTRICAL_SPEC = re.compile(r"\b\d+(?:\.\d+)?\s?(?:v|va|vac|a|mah|w)\b", re.I)
 # Visual causes the analyzer never detects; suggesting them is speculation the image does not support (N30).
-_UNSEEN_CAUSES = re.compile(r"\b(protective (?:shipping )?film|condensation|fog(?:ging)?|sun glare|glare)\b", re.I)
+# One list for the customer text and the KB filter (the KB filter keeps an action the analyzer issues name).
+_UNSEEN_CAUSES = re.compile(
+    r"\b(film|condensation|fog\w*|glare|scratch\w*|reflect\w*|halo|obstruct\w*|sunlight)\b", re.I)
 _INTERNAL_FIELD = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 _KB_ID = re.compile(r"\bKB-RING-\d+\b", re.I)
 
@@ -162,7 +164,8 @@ def customer_text_problems(text: str, charging_check_allowed: bool = True) -> li
     if _INTERNAL_FIELD.search(text):
         problems.append("recommended_mitigation contains an internal field name")
     if _UNSEEN_CAUSES.search(text):
-        problems.append("recommended_mitigation suggests causes the image does not show (film, condensation, glare)")
+        problems.append("recommended_mitigation suggests causes the image does not show (film, condensation, glare, "
+                        "reflections, obstructions)")
     if _ELECTRICAL_SPEC.search(text):
         problems.append("recommended_mitigation quotes an electrical specification (volts, amps, VA)")
     if _electrical_work(text, charging_check_allowed):
@@ -492,7 +495,6 @@ _READABLE_METRICS = {
 _KB_ELECTRICAL_ACTION = re.compile(
     r"\b(?:transformer|wiring|wires?|terminals?|pro power kit|jumper|voltage|va rating|power requirements|"
     r"power supply|breakers?|multimeter|poe|ethernet|injector)\b", re.I)
-_KB_UNSEEN_ACTION = re.compile(r"\b(?:film|condensation|fog\w*|scratch\w*|glare|reflect\w*|halo)\b", re.I)
 _KB_POWER_CYCLE = re.compile(r"\bpower cycle (?:the )?(?:ring )?(?:device|doorbell|camera)(?: or camera)?", re.I)
 _KB_CHARGER_SPEC = re.compile(r"\s+with an? [^.,;]*?\d[^.,;]*?charger\b", re.I)
 RING_APP_RESTART = "Restart the doorbell following the steps in the Ring app"
@@ -503,7 +505,7 @@ def _kb_action_for_prompt(action: str, issues_text: str) -> Optional[str]:
     action = _KB_POWER_CYCLE.sub(RING_APP_RESTART, _KB_CHARGER_SPEC.sub("", action))
     if _KB_ELECTRICAL_ACTION.search(action) or _ELECTRICAL_SPEC.search(action):
         return None
-    unseen = _KB_UNSEEN_ACTION.findall(action)
+    unseen = _UNSEEN_CAUSES.findall(action)
     if unseen and not all(word.lower() in issues_text for word in unseen):
         return None
     return action
