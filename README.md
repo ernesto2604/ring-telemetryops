@@ -171,6 +171,8 @@ defines no sharpness, blur, colour or banding metric.
 * **Rolling-shutter banding (50/60 Hz flicker):** the standard deviation of the row-to-row brightness
   differences; above **4.5** the analyzer reports periodic horizontal banding (`DEGRADED`). Observed:
   the simulator's flicker gave 15.8 in the browser and 17.2 in the Python emulation used by the tests.
+  The customer message points to the Anti-Flicker setting in the Ring app: that setting comes from the
+  project knowledge base (KB-RING-014, unverified), not from Ring documentation.
 * **Black frame:** mean brightness below 4.0 is `CRITICAL` (no usable optical signal).
 * **Stream metrics:** frame rate and bitrate use the FPS and bitrate bands of the severity table.
 

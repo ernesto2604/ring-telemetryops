@@ -1140,7 +1140,7 @@
         "Ring Developer Experience: Video Pipeline Specifications"
       ],
       "customer_messages": {
-        "default": "Your video shows flickering stripes, usually caused by a nearby LED light. Try switching that light off or using a different bulb, then check the live view in the Ring app."
+        "default": "Your video shows flickering stripes, usually caused by a nearby LED light. Try switching that light off or using a different bulb. If the stripes stay, change the Anti-Flicker setting in the Ring app, then check the live view in the Ring app."
       }
     },
     {
