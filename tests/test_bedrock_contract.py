@@ -101,10 +101,12 @@ def test_a_call_error_is_not_retried():
 
 
 def test_bedrock_answer_with_jargon_is_corrected_or_replaced():
+    # T15: jargon twice in the customer text only keeps Bedrock's report with the deterministic KB message.
     jargon = "Your RSSI is -84 dBm; improve jitter and packet loss on the WebRTC stream."
     script = Script(reply(mitigation=jargon), reply(mitigation=jargon))
     result = run(script)
-    assert result["_provider"] == "local_fallback"
+    assert result["_provider"] == "bedrock"
+    assert result["mitigation_source"] == "knowledge_base_deterministic"
     assert "technical terms" in script.prompts[1]
     assert customer_text_problems(result["diagnostic_result"]["recommended_mitigation"]) == []
 
@@ -127,7 +129,7 @@ def test_prompt_contains_the_level_table_and_its_provenance():
     assert severity.PROVENANCE in PROMPT
     for line in severity.table_for_prompt().splitlines():
         assert " ".join(line.split()) in PROMPT
-    assert "quote ONLY the boundary of its next better level" in PROMPT
+    assert "quote ONLY its GREEN boundary given in the case" in PROMPT   # T9 (was: next better level)
 
 
 def test_prompt_never_generalizes_the_mechanical_chime_rule():
@@ -153,13 +155,15 @@ def test_prompt_states_the_customer_text_rules():
     assert "For a blurry lens do not mention condensation, protective film, obstructions or sun glare" in PROMPT
 
 
-def test_case_lists_precheck_anomalies_with_level_and_next_target():
+def test_case_lists_precheck_anomalies_with_level_and_green_target():
+    # T9 (C3, N42): the target is the GREEN boundary (-60 dBm), not the edge of the Poor band (-75 dBm).
     script = Script(reply())
     run(script)
     case = script.prompts[0]
     assert "=== PRE-CHECK ANOMALIES" in case
-    assert "- DEGRADED: Wi-Fi signal (RSSI) -84 dBm: Poor (DEGRADED, < -75 dBm). To leave this band it must be " \
-           "at or above -75 dBm." in case
+    assert "- DEGRADED: Wi-Fi signal (RSSI) -84 dBm: Poor (DEGRADED, < -75 dBm). To return to GREEN it must be " \
+           "at or above -60 dBm." in case
+    assert "To leave this band" not in case
     assert "diagnostic_status can NOT be HEALTHY" in case
 
 

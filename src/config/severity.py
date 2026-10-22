@@ -117,6 +117,26 @@ def next_level_target(item: Dict[str, Any]) -> Optional[str]:
     return f"{better} {item['limit']:g} {rule['unit']}"
 
 
+def green_target(metric: str, context: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    The boundary of the GREEN band, from the mildest band that applies (e.g. RSSI 'at or above
+    -60 dBm', even when the value is Poor). None when no band applies.
+    """
+    rule = METRICS[metric]
+    bands = [band for band in rule["bands"] if _applies(band, context or {})]
+    if not bands:
+        return None
+    band = bands[-1]   # bands run from worst to mildest
+    better = {"lt": "at or above", "lte": "above", "gt": "at or below", "gte": "below"}[band["op"]]
+    return f"{better} {band['value']:g} {rule['unit']}"
+
+
+def _readable(condition: Dict[str, Any]) -> str:
+    """'power setup = battery' instead of the internal key 'power_mode=battery'."""
+    names = {"power_mode": "power setup", "chime_type": "in-home chime type"}
+    return ", ".join(f"{names.get(k, k.replace('_', ' '))} = {v}" for k, v in condition.items())
+
+
 def table_for_prompt() -> str:
     """The level table as plain text for the Bedrock prompt."""
     lines = []
@@ -126,10 +146,10 @@ def table_for_prompt() -> str:
         )
         scope = ""
         if "when" in rule:
-            scope += " only when " + ", ".join(f"{k}={v}" for k, v in rule["when"].items())
+            scope += " only when " + _readable(rule["when"])
         if "unless" in rule:
-            scope += " not when " + ", ".join(f"{k}={v}" for k, v in rule["unless"].items())
-        band_scope = [f"{band['label']} band only when " + ", ".join(f"{k}={v}" for k, v in band["when"].items())
+            scope += " not when " + _readable(rule["unless"])
+        band_scope = [f"{band['label']} band only when " + _readable(band["when"])
                       for band in rule["bands"] if "when" in band]
         extra = f" ({'; '.join(band_scope)})" if band_scope else ""
         lines.append(f"- {rule['label']} [{rule['unit']}]{scope}: {bands}; otherwise GREEN{extra}.")

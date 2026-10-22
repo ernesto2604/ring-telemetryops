@@ -374,6 +374,15 @@ class KnowledgeRetriever:
 
         # 6. Sort, trim and return
         ranked = sorted(scored.values(), key=lambda x: x[0], reverse=True)
+        # T14: a transformer power cut explains a black frame; the optical and Live View articles
+        # would only add actions about a symptom, so only the power article is returned.
+        trans_v = tel_flat.get("transformer_voltage_vac")
+        power_cut = (tel_flat.get("power_mode") != "battery" and trans_v is not None
+                     and (severity.classify_metric("transformer", trans_v) or {}).get("level") == severity.CRITICAL)
+        black_frame = (diagnostic_report.get("status") == "CRITICAL" or black_ratio > 0.8
+                       or "black screen" in issues_text)
+        if power_cut and black_frame:
+            ranked = [item for item in ranked if item[1].get("issue_category") == "power"]
         return [item[1] for item in ranked[:top_k]]
 
 
