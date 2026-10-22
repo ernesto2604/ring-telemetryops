@@ -413,12 +413,39 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
 * **Bedrock (realistic mode)** is the diagnosis this project is built around: Claude Haiku 4.5 reads the
   keyframe, the metrics, the pre-check anomalies with their levels and the retrieved KB articles, and
   writes the findings and a plain-language mitigation. It is the most realistic and precise mode.
-  Its answer must respect the report contract: valid schema, not HEALTHY when the pre-check found an
-  anomaly, and a customer mitigation of at most 60 words without technical terms, KB IDs, electrical
-  specifications (volts, amps, VA), visual causes the image does not show (protective film, condensation,
-  glare), internal field
-  names or electrical work. A violation gets **one** corrective retry; a second violation, or a call
-  error (credentials, permissions, region, throttling), uses the local fallback.
+  Its answer must respect the report contract (`src/agent/concierge.py`):
+  * valid schema, and not HEALTHY when the pre-check found an anomaly;
+  * a customer mitigation of at most 60 words without technical terms, KB IDs, internal field names,
+    electrical specifications (volts, amps, VA) or visual causes the analyzer cannot observe (film,
+    condensation, glare, reflections, obstructions, scratches);
+  * no electrical work. Safe-check policy: the customer may restart the doorbell following the steps in
+    the Ring app and, for battery or charging problems only, make sure the charging cable or plug adapter
+    is firmly connected, followed by "Don't open the doorbell or touch any wires; if the problem
+    continues, contact a qualified electrician or Ring Support." Turning off or cutting the power, power
+    cycles, unplugging, fuses, breakers and any action on wires, wiring, terminals, connections or the
+    transformer are rejected. Transformer, wiring and chime cases allow only the Ring app restart and a
+    referral to a qualified electrician or Ring Support;
+  * findings without internal field names; `visual_findings` about image quality only (no people,
+    faces, clothing, objects, vehicles, license plates, buildings or vegetation); a sharpness score at or
+    above 40 is never called low; and no numerically false "below / above the X threshold" claim.
+
+  What reaches the model is sanitized first: KB actions and facts lose electrical figures, electrical
+  work and unobservable causes (unless the analyzer reports them), "power cycle" becomes a restart from
+  the Ring app, the case uses readable names instead of field names, and a METRIC LEVELS section gives
+  every measured metric its precomputed level and its GREEN boundary (the improvement target, e.g.
+  "at or above -60 dBm" for a Poor RSSI). With a transformer power cut and a black frame, only the power
+  article (KB-RING-009) is retrieved and the black frame is described as a symptom of the power loss.
+
+  A violation gets **one** corrective retry. If the corrected answer breaks only the customer text,
+  Bedrock's report is kept and the mitigation is replaced by the deterministic KB message
+  (`mitigation_source: "knowledge_base_deterministic"`, or `"generic_deterministic"` without a KB
+  match), shown under Technical details. Any other second violation, or a call error (credentials,
+  permissions, region, throttling), uses the local fallback.
+
+  Live verification (12 cases against `us.anthropic.claude-haiku-4-5-20251001-v1:0`, 12 Bedrock
+  calls): 0 retries (the first round had 4 of 14), 0 deterministic replacements and 0 fallbacks. One
+  validator gap was found and closed (mounting advice about obstructions or reflective surfaces for a
+  dirty lens); the nominal night-mode frame did not call Bedrock.
 * **Local fallback (mock-up)** (`_provider: "local_fallback"`) is a deterministic stand-in that validates
   the report contract and the end-to-end functions without AWS. It uses the same schema and the same
   severity table, lists every detected anomaly, and takes the mitigation from the plain-language
@@ -439,6 +466,11 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
 * **Sharpness is not comparable across resolutions:** `bad_internet.mp4` scores 536 at its native
   320x240 in the CLI, but the same frame upscaled to 1280x720 scores 34 (bilinear), 46 (bicubic) or 145
   (nearest neighbour). The threshold of 40 is calibrated for sources of 720 px or more.
+* **Night mode + Dirty Lens is a false negative:** with both active, the measured sharpness was 219.6
+  (above the threshold of 40) and the dirty lens was not detected. Night mode alone scored 601.71,
+  629.78, 605.66 and 580.77, the flicker 615.31 – 626.32, and the daytime Dirty Lens 15.81, 15.72 and
+  13.68: infrared noise and banding inflate the Laplacian variance. The metric and its threshold are
+  unchanged by design.
 * **Dropped frames:** the "210/450 frames dropped" Bedrock may cite comes from the simulated
   `wifi_degradation` scenario. The Twin sliders do not simulate dropped frames, so slider telemetry
   reports them as unavailable ("not simulated by the Digital Twin sliders").
