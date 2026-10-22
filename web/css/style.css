@@ -18,8 +18,8 @@
   --ring-orange:    #ff7043;
 
   --text-primary:   #eef2ff;
-  --text-secondary: #8892a4;
-  --text-muted:     #4a5568;
+  --text-secondary: #9aa4b5;   /* WCAG AA: >= 6.7:1 on the card backgrounds */
+  --text-muted:     #808b9f;   /* WCAG AA: >= 4.5:1 on the card backgrounds */
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -96,7 +96,7 @@ header {
 .logo-text span { color: var(--ring-cyan); }
 
 .logo-badge {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 600;
   background: var(--ring-blue-glow);
   border: 1px solid rgba(26,108,255,0.3);
@@ -185,7 +185,7 @@ main {
 .card:hover { border-color: var(--border-active); }
 
 .card-title {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -210,7 +210,7 @@ main {
   background: rgba(255,255,255,0.05);
   border: 1px solid var(--border);
   color: var(--text-secondary);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 500;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
@@ -241,7 +241,7 @@ main {
    BADGES & TABS
    ===================================================================== */
 .badge {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 600;
   padding: 3px 10px;
   border-radius: 20px;
@@ -452,7 +452,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 .metric-card:hover { border-color: var(--border-active); }
 
 .metric-label {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   font-weight: 600;
   text-transform: uppercase;
@@ -468,7 +468,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 }
 
 .metric-unit {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 2px;
 }
@@ -549,7 +549,7 @@ input[type=range]::-webkit-slider-thumb:hover {
   gap: 4px;
 }
 
-.confidence-label { font-size: 0.7rem; color: var(--text-muted); }
+.confidence-label { font-size: 0.75rem; color: var(--text-muted); }
 
 .confidence-track {
   width: 100%;
@@ -577,7 +577,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 }
 
 .findings-block h3 {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -613,7 +613,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 }
 
 .mitigation-box h3 {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -754,7 +754,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 }
 .kb-card-id {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--ring-cyan);
   background: rgba(0,212,255,0.1);
   padding: 2px 8px;
@@ -768,7 +768,7 @@ input[type=range]::-webkit-slider-thumb:hover {
   line-height: 1.35;
 }
 .kb-card-source {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-bottom: 0.6rem;
 }
@@ -785,7 +785,7 @@ input[type=range]::-webkit-slider-thumb:hover {
   margin-top: 0.5rem;
 }
 .kb-tag {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(255,255,255,0.05);
@@ -836,7 +836,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 
 /* Band name under each metric value: the level is written, not only coloured */
 .metric-level {
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   margin-top: 2px;
   min-height: 0.9em;
@@ -870,7 +870,7 @@ input[type=range]::-webkit-slider-thumb:hover {
 #result-content.resolved .diagnostic-status,
 #result-content.resolved .mitigation-box {
   filter: grayscale(1);
-  opacity: 0.55;
+  opacity: 0.7;   /* still dimmed; its text keeps >= 3:1 */
 }
 #diag-resolved-note {
   font-size: 0.8rem;

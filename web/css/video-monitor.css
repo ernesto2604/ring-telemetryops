@@ -116,7 +116,7 @@
   text-transform: uppercase;
 }
 .standby-subtitle {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   max-width: 320px;
   text-align: center;
@@ -186,7 +186,7 @@
   backdrop-filter: blur(4px);
   padding: 3px 8px;
   border-radius: 4px;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-family: 'JetBrains Mono', monospace;
   color: #fff;
   display: flex;
@@ -199,7 +199,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: #00e676;
   background: rgba(0,230,118,0.15);
@@ -230,7 +230,7 @@
 }
 
 .signal-quality-pill {
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 4px;
@@ -241,7 +241,7 @@
 .sq-good    { background: rgba(0,230,118,0.2);  color: #00e676; border: 1px solid rgba(0,230,118,0.4); }
 .sq-fair    { background: rgba(255,214,0,0.2);  color: #ffd600; border: 1px solid rgba(255,214,0,0.4); }
 .sq-poor    { background: rgba(255,61,87,0.2);  color: #ff3d57; border: 1px solid rgba(255,61,87,0.4); }
-.sq-offline { background: rgba(80,80,80,0.3);   color: #666;    border: 1px solid #444; }
+.sq-offline { background: rgba(80,80,80,0.3);   color: #a0a0a0; border: 1px solid #444; }
 
 /* Background Heartbeat Bar */
 .heartbeat-status-card {
@@ -258,7 +258,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
 }
 .hb-dot {
@@ -275,14 +275,14 @@
 }
 .heartbeat-timer {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--ring-cyan);
   background: rgba(0,212,255,0.1);
   padding: 2px 7px;
   border-radius: 4px;
 }
 .persistency-badge {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   padding: 2px 7px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
@@ -329,12 +329,12 @@
   margin-bottom: 2px;
 }
 .app-push-desc {
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   color: var(--text-secondary);
   line-height: 1.35;
 }
 .app-push-meta {
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
   margin-top: 4px;
   display: flex;

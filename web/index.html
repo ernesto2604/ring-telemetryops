@@ -115,7 +115,7 @@
       <div class="hardware-controls-bar" id="twin-hw-controls">
         <div class="hw-title">
           <span>🛠️ Hardware Digital Twin</span>
-          <span style="font-size:0.65rem;color:var(--text-muted);text-transform:none">Physical Fault Injection</span>
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:none">Physical Fault Injection</span>
         </div>
         <div class="hw-btn-grid">
           <button class="hw-tool-btn" id="hw-btn-dirty" onclick="toggleDirtyLens()">
@@ -133,7 +133,7 @@
         </div>
         <div class="hw-title hw-title-normal">
           <span>🌙 Normal operating conditions</span>
-          <span style="font-size:0.65rem;color:var(--text-muted);text-transform:none">Not a fault</span>
+          <span style="font-size:0.75rem;color:var(--text-muted);text-transform:none">Not a fault</span>
         </div>
         <div class="hw-btn-grid">
           <button class="hw-tool-btn" id="hw-btn-night" onclick="toggleNightMode()" style="grid-column: 1 / -1;"
@@ -160,15 +160,15 @@
           <button class="btn-header-action btn-reset-telemetry" onclick="resetTelemetryDefaults()" title="Reset all telemetry to optimal factory defaults">
             <span>🔄</span> Reset Telemetry
           </button>
-          <span id="telemetry-source-label" style="font-size:0.68rem;color:var(--ring-cyan);font-weight:600;">Digital Twin (simulated)</span>
+          <span id="telemetry-source-label" style="font-size:0.75rem;color:var(--ring-cyan);font-weight:600;">Digital Twin (simulated)</span>
         </div>
       </div>
 
       <!-- Power Mode Selector -->
       <div id="twin-power-selector" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 1.1rem;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 6px;">
-          <span style="font-size: 0.68rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Power Installation</span>
-          <span id="power-mode-status-pill" style="font-size: 0.65rem; color: var(--ring-cyan); font-weight: 500;">⚡ Continuous Hardwired</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Power Installation</span>
+          <span id="power-mode-status-pill" style="font-size: 0.75rem; color: var(--ring-cyan); font-weight: 500;">⚡ Continuous Hardwired</span>
         </div>
         <div class="provider-row" style="width: 100%;">
           <button class="provider-btn active" id="btn-pwr-wired" onclick="setPowerMode('wired')" style="flex: 1; text-align: center;">
@@ -284,7 +284,7 @@
           <div class="card-title-icon">🎬</div>
           Camera Monitor — Digital Twin
         </div>
-        <div style="font-size:0.7rem;color:var(--text-muted);">
+        <div style="font-size:0.75rem;color:var(--text-muted);">
           <span id="monitor-source-label">Simulated stream (sample MP4)</span>
         </div>
       </div>
@@ -345,7 +345,7 @@
           <span class="heartbeat-timer" id="hb-timer">15s</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:0.7rem;color:var(--text-muted)">Anomaly persistence:</span>
+          <span style="font-size:0.75rem;color:var(--text-muted)">Anomaly persistence:</span>
           <span class="persistency-badge ok" id="hb-persistency">0/3 heartbeats</span>
         </div>
       </div>
@@ -384,7 +384,7 @@
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div>
           <div style="font-weight:600;font-size:0.82rem;">Autonomous AI Reasoning Engine</div>
-          <div style="font-size:0.72rem;color:var(--text-muted);" id="engine-mode-desc">Diagnoses without manual intervention upon detecting sustained anomalies or degraded sessions</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);" id="engine-mode-desc">Diagnoses without manual intervention upon detecting sustained anomalies or degraded sessions</div>
         </div>
         <div class="provider-row">
           <button class="provider-btn" id="btn-analyze-now" onclick="runManualDiagnosis()" style="display:none;">🩺 Analyze now</button>
@@ -408,7 +408,7 @@
         <button class="btn-header-action btn-clear-diag" onclick="clearDiagnosticConsole()" title="Clear diagnostic report and alerts">
           <span>🧹</span> Clear Console
         </button>
-        <span style="font-size:0.68rem;color:var(--ring-green);font-weight:600;" id="autonomous-mode-label">● Autonomous Mode Active</span>
+        <span style="font-size:0.75rem;color:var(--ring-green);font-weight:600;" id="autonomous-mode-label">● Autonomous Mode Active</span>
       </div>
     </div>
 
