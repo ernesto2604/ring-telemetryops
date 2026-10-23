@@ -308,6 +308,9 @@
         <!-- Partner mode: last Ring snapshot, served from server memory (never cached) -->
         <img id="partner-snapshot" alt="Ring snapshot (latest recording)"
              style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;">
+        <!-- Partner mode: Ring live view (WHEP), replaces the snapshot while the session lasts -->
+        <video id="ring-live-video" autoplay muted playsinline
+               style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;"></video>
 
         <!-- Active Canvas Stream -->
         <canvas id="video-canvas"></canvas>
@@ -398,11 +401,14 @@
           <button class="provider-btn" id="btn-analyze-now" onclick="runManualDiagnosis()" style="display:none;">🩺 Analyze now</button>
           <button class="provider-btn" id="btn-analyze-clip" onclick="runClipAnalysis()" style="display:none;" title="Downloads 5 s of the newest event's Ring recording">🎞️ Analyze last recording (5 s)</button>
           <button class="provider-btn" id="btn-live-stats" onclick="runLiveStats()" style="display:none;" title="Best effort: reads Ring's live stream on this server for about 8 s">📡 Live stream stats (8 s)</button>
+          <button class="provider-btn" id="btn-ring-live" onclick="startRingLiveView()" style="display:none;" title="Shows Ring's live video in this browser (WHEP through this server); Ring ends it within 30–60 s">🔴 Ring live view (up to 60 s)</button>
+          <button class="provider-btn" id="btn-ring-live-stop" onclick="stopRingLiveView('stopped')" style="display:none;">⏹️ Stop</button>
           <span class="provider-btn active" id="engine-provider" title="Engine that produced the last diagnosis">⏸️ No diagnosis yet</span>
         </div>
       </div>
       <div id="ring-media-stats" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;display:none;"></div>
       <div id="ring-live-stats" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;display:none;"></div>
+      <div id="ring-live-view-status" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;display:none;"></div>
       <div id="funnel-line" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;" title="Counted in server memory since it started; not stored">Funnel (this session): —</div>
     </div>
 
@@ -533,6 +539,7 @@
 <script src="/web/js/canvas-engine.js?v=7"></script>
 <script src="/web/js/telemetry.js?v=7"></script>
 <script src="/web/js/app.js?v=8"></script>
+<script src="/web/js/whep.js?v=1"></script>
 
 </body>
 </html>

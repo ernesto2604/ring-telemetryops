@@ -172,6 +172,8 @@ function applyPartnerModeUI() {
   if (clipBtn) clipBtn.style.display = '';
   const liveBtn = document.getElementById('btn-live-stats');
   if (liveBtn) liveBtn.style.display = '';
+  const ringLiveBtn = document.getElementById('btn-ring-live');
+  if (ringLiveBtn) ringLiveBtn.style.display = '';
   const modeLabel = document.getElementById('autonomous-mode-label');
   if (modeLabel) modeLabel.textContent = '● Manual analysis (Ring Partner API)';
   const sourceLabel = document.getElementById('telemetry-source-label');
