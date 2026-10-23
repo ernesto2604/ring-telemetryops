@@ -18,14 +18,14 @@ Everything below was observed while building Ring TelemetryOps.
 - **Steps:** POST .../media/image/download with latest_in_range, follow the 303 Location, GET the pre-signed URL without the token.
 - **Expected:** a JPEG. Actual: 422 with code GRECO_NO_VALID_KEY ("No valid Greco key available for decryption") on the pre-signed GET, while at_timestamp with an event's start time returns 200 image/jpeg. The documentation lists only 422 CORRUPT_RECORDING.
 - **Severity:** High for "latest image" use cases.
-- **Workaround:** start from the newest event's timestamp and try up to three events. We searched Ring's documentation through the Ring MCP: the image-download error table lists only CORRUPT_RECORDING for 422. Ring's support article on TAKE (Throw Away the Key Encryption) says third-party integrations require pausing TAKE and that such videos are viewable only from enrolled devices, which is consistent with this error, but we could not confirm the cause.
+- **Workaround:** start from the newest event's timestamp and try up to three events. I searched Ring's documentation through the Ring MCP: the image-download error table lists only CORRUPT_RECORDING for 422. Ring's support article on TAKE (Throw Away the Key Encryption) says third-party integrations require pausing TAKE and that such videos are viewable only from enrolled devices, which is consistent with this error, but I could not confirm the cause.
 - **Suggestion:** document the code and its meaning, and let latest_in_range skip recordings that cannot be decrypted.
 
 ### 3. The Playground token lifetime
 
 - **Task:** develop and demo against the Playground.
 - **Steps:** generate a temporary token, put it in the server configuration, restart.
-- **Expected:** a token that lasts through a development session. Actual: the Playground states a 30-minute lifetime (the real linking flow gives about 4 hours), so we generated a new token for each test session and restarted the server; in one case a token still worked well after 30 minutes.
+- **Expected:** a token that lasts through a development session. Actual: the Playground states a 30-minute lifetime (the real linking flow gives about 4 hours), so I generated a new token for each test session and restarted the server; in one case a token still worked well after 30 minutes.
 - **Severity:** Medium.
 - **Workaround:** generate the token right before each test.
 - **Suggestion:** a longer-lived development token or a refresh option in the Playground.
@@ -34,7 +34,7 @@ Everything below was observed while building Ring TelemetryOps.
 
 - **Task:** analyze image quality (sharpness, banding) on snapshots.
 - **Steps:** measure Laplacian sharpness and row banding on downloaded snapshots at 1280x720 and 640x360.
-- **Expected:** metrics that reflect the scene. Actual: the documentation says the watermark has a fixed pixel size; in our samples it covered the top 15 to 85 pixel rows in both sizes, which is under 12% of the height in one case and about 24% in the other. The high-contrast text inflated our sharpness and banding metrics until we cropped it.
+- **Expected:** metrics that reflect the scene. Actual: the documentation says the watermark has a fixed pixel size; in my samples it covered the top 15 to 85 pixel rows in both sizes, which is under 12% of the height in one case and about 24% in the other. The high-contrast text inflated my sharpness and banding metrics until I cropped it.
 - **Severity:** Medium.
 - **Workaround:** crop a fixed pixel band before measuring.
 - **Suggestion:** return the watermark's bounding box (or a header) with the image, or offer a watermark-free mode for the Playground.
@@ -43,7 +43,7 @@ Everything below was observed while building Ring TelemetryOps.
 
 - **Task:** test event-driven logic.
 - **Steps:** press Vehicle, Motion or Package in "Simulate live view event", then poll Event History.
-- **Expected:** typed events. Actual: all new entries show as live view (on_demand). Our server analyzed a new event roughly 45 to 48 seconds after the click (polling every 15 s plus the time Ring takes to list the event; we could not separate the two).
+- **Expected:** typed events. Actual: all new entries show as live view (on_demand). My server analyzed a new event roughly 45 to 48 seconds after the click (polling every 15 s plus the time Ring takes to list the event; I could not separate the two).
 - **Severity:** Low.
 - **Workaround:** treat any new event as a trigger.
 - **Suggestion:** simulate typed events (for example motion.vehicle, ding) so partners can test sub-type filtering.
@@ -69,7 +69,7 @@ Everything below was observed while building Ring TelemetryOps.
 - **Task:** build a client.
 - **Expected:** a reference client. Actual: the documentation states there is no official Ring Partner SDK, so every project writes its own HTTP client (pre-signed redirects, retries, error mapping).
 - **Severity:** Low.
-- **Workaround:** a small read-only client with tests against a fake Ring server (included in our repository).
+- **Workaround:** a small read-only client with tests against a fake Ring server (included in this repository).
 - **Suggestion:** a minimal reference client or a Bruno/Postman collection.
 
 ### 9. Two different explanations for a 406
@@ -77,7 +77,7 @@ Everything below was observed while building Ring TelemetryOps.
 - **Task:** handle a 406 response correctly.
 - **Expected:** one explanation. Actual: the API reference says a 406 means Ring's web application firewall blocked the request, typically for missing User-Agent/Hardware_Id headers or a datacenter IP; the error-handling document found through the Ring MCP says a 406 means the IP address was blocked by Ring Security for irregular traffic and is not retryable.
 - **Severity:** Low.
-- **Workaround:** our error message names both causes.
+- **Workaround:** my error message names both causes.
 - **Suggestion:** unify the explanation and say how to tell the two cases apart.
 
 ### 10. Webhook types described inconsistently
@@ -91,10 +91,10 @@ Everything below was observed while building Ring TelemetryOps.
 
 - **Task:** find how to test without owning hardware.
 - **Steps:** search Ring's documentation through the Ring MCP for testing guidance.
-- **Expected:** a mention of the Playground. Actual: the testing guidance describes testing with a personal Ring account, staging users and a Ring Protect plan; it did not mention the Playground, which gave us a synthetic device, simulated events and a temporary token.
+- **Expected:** a mention of the Playground. Actual: the testing guidance describes testing with a personal Ring account, staging users and a Ring Protect plan; it did not mention the Playground, which gave me a synthetic device, simulated events and a temporary token.
 - **Severity:** Low.
 - **Suggestion:** link the Playground from the Get Started and Test pages.
 
 ---
 
-**Lesson:** thresholds calibrated on a simulator did not transfer to real Ring images (a banding detector gave false alarms on real frames until we cropped the watermark and required periodicity), so we calibrated on real Playground frames.
+**Lesson:** thresholds calibrated on a simulator did not transfer to real Ring images (a banding detector gave false alarms on real frames until I cropped the watermark and required periodicity), so I calibrated on real Playground frames.
