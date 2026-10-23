@@ -9,6 +9,10 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
   GET /v1/devices/{device_id}/status         Device Status
   GET /v1/devices/{device_id}/capabilities   Device Capabilities
 
+REQUIRED HEADERS:
+  - Every request sends `User-Agent: RingTelemetryOps/<version>` and `Hardware_Id: <UUID>`.
+    Without them Ring's firewall can answer HTTP 406 (raised as RingBlockedError).
+
 SECURITY:
   - The access token is read exclusively from RING_PARTNER_ACCESS_TOKEN.
   - It is only sent in the Authorization header. It is never logged,
@@ -31,7 +35,9 @@ import json
 import logging
 import math
 import os
+import socket
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from urllib.parse import quote
@@ -41,7 +47,11 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 RING_API_BASE_URL = "https://api.amazonvision.com"
+BASE_URL_ENV_VAR = "RING_PARTNER_BASE_URL"
 TOKEN_ENV_VAR = "RING_PARTNER_ACCESS_TOKEN"
+HARDWARE_ID_ENV_VAR = "RING_PARTNER_HARDWARE_ID"
+APP_VERSION = "1.0.0"
+USER_AGENT = f"RingTelemetryOps/{APP_VERSION}"
 NOT_PROVIDED_BY_API = "not_provided_by_api"
 
 
@@ -81,6 +91,10 @@ class RingNotFoundError(RingPartnerError):
     """HTTP 404 — unknown device or resource."""
 
 
+class RingBlockedError(RingPartnerError):
+    """HTTP 406 — Ring's firewall rejected the request (missing required headers or a datacenter IP)."""
+
+
 class RingRateLimitError(RingPartnerError):
     """HTTP 429 — rate limit exceeded; `retry_after` is in seconds, if provided."""
 
@@ -111,9 +125,22 @@ _STATUS_ERRORS = {
     401: RingUnauthorizedError,
     403: RingForbiddenError,
     404: RingNotFoundError,
+    406: RingBlockedError,
     429: RingRateLimitError,
     503: RingServiceUnavailableError,
 }
+
+
+def hardware_id() -> str:
+    """
+    Hardware_Id header: RING_PARTNER_HARDWARE_ID when set, else a UUID5 of this host's name and
+    RING_PARTNER_DEVICE_ID, so it stays the same between runs on the same machine.
+    """
+    configured = os.getenv(HARDWARE_ID_ENV_VAR, "").strip()
+    if configured:
+        return configured
+    seed = f"{socket.gethostname()}|{os.getenv('RING_PARTNER_DEVICE_ID', '').strip()}"
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"ring-telemetryops.{seed}"))
 
 
 def parse_retry_after(value: Optional[str], now: Optional[float] = None) -> Optional[float]:
@@ -264,7 +291,8 @@ class RingPartnerClient:
     Read-only Ring API client.
 
     Args:
-        base_url:                Ring API host (tests point this at a local server).
+        base_url:                Ring API host; default RING_PARTNER_BASE_URL, else the official
+                                 host (tests point this at a local server).
         timeout_seconds:         Total timeout per HTTP request.
         max_rate_limit_retries:  Max retries after HTTP 429 (bounded; default 1).
         max_retry_after_seconds: A 429 whose Retry-After exceeds this is raised, not waited.
@@ -276,7 +304,7 @@ class RingPartnerClient:
 
     def __init__(
         self,
-        base_url: str = RING_API_BASE_URL,
+        base_url: Optional[str] = None,
         timeout_seconds: float = 10.0,
         max_rate_limit_retries: int = 1,
         max_retry_after_seconds: float = 10.0,
@@ -284,6 +312,7 @@ class RingPartnerClient:
         max_transient_retries: int = 1,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
+        base_url = base_url or os.getenv(BASE_URL_ENV_VAR, "").strip() or RING_API_BASE_URL
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_rate_limit_retries = max(0, int(max_rate_limit_retries))
@@ -292,6 +321,9 @@ class RingPartnerClient:
         self.max_transient_retries = max(0, int(max_transient_retries))
         self._sleep = sleep
         self._token = os.getenv(TOKEN_ENV_VAR, "").strip()
+        self.hardware_id = hardware_id()
+        # Last X-RateLimit-Remaining Ring sent (None until a response carries it).
+        self.rate_limit_remaining: Optional[int] = None
 
     def __repr__(self) -> str:
         return f"RingPartnerClient(base_url={self.base_url!r}, configured={self.is_configured})"
@@ -405,6 +437,8 @@ class RingPartnerClient:
             pass  # non-JSON body (e.g. a proxy HTML page): keep only the HTTP status
 
         message = f"Ring API GET {path} failed with HTTP {status}"
+        if status == 406:
+            message = f"Ring blocked the request: missing headers or a datacenter IP (GET {path}, HTTP 406)"
         reason = " — ".join(v for v in (fields["title"], fields["detail"]) if v)
         if reason:
             message += f": {reason}"
@@ -428,6 +462,8 @@ class RingPartnerClient:
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Hardware_Id": self.hardware_id,
         }
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         retries = 0
@@ -440,6 +476,9 @@ class RingPartnerClient:
                         status = response.status
                         body = await response.text()
                         retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                        remaining = response.headers.get("X-RateLimit-Remaining", "").strip()
+                        if remaining.isdigit():
+                            self.rate_limit_remaining = int(remaining)
                 except asyncio.TimeoutError:
                     # Not retried: a second full timeout would double the caller's wait.
                     raise RingTimeoutError(

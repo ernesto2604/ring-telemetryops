@@ -13,9 +13,11 @@ if str(ROOT) not in sys.path:
 # variable, so a local .env cannot switch tests to a real Ring data source.
 os.environ["RING_DATA_SOURCE"] = "simulator"
 # Same reason: real Ring or AWS credentials from a local .env never reach the tests.
-for _name in ("RING_PARTNER_ACCESS_TOKEN", "RING_PARTNER_DEVICE_ID",
+for _name in ("RING_PARTNER_ACCESS_TOKEN", "RING_PARTNER_DEVICE_ID", "RING_PARTNER_HARDWARE_ID",
               "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
     os.environ[_name] = ""
+# A client built without an explicit base_url must never reach the real Ring API: nothing listens here.
+os.environ["RING_PARTNER_BASE_URL"] = "http://127.0.0.1:9"
 
 
 @pytest.fixture(autouse=True)

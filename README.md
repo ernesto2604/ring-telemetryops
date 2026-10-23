@@ -286,6 +286,9 @@ Remove-Item Env:RING_DATA_SOURCE, Env:PYTHON_DOTENV_DISABLED -ErrorAction Silent
 `.env.example` documents the Partner polling settings (`RING_PARTNER_POLL_SECONDS`,
 `RING_PARTNER_OFFLINE_ALERT_READS`, `RING_PARTNER_OFFLINE_ALERT_MAX_GAP_SECONDS`); they are
 prototype defaults, not Ring recommendations.
+Two optional Partner settings: `RING_PARTNER_HARDWARE_ID` (the `Hardware_Id` header Ring requires;
+default: a UUID5 derived from the computer name and `RING_PARTNER_DEVICE_ID`, stable between runs) and
+`RING_PARTNER_BASE_URL` (default `https://api.amazonvision.com`; the tests point it at a local fake server).
 
 AWS access with `bedrock:InvokeModel` permission for the configured Anthropic model is
 required for the primary diagnosis path. Explicit `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
