@@ -46,3 +46,26 @@ def test_presigned_get_can_reply_with_the_live_422_json_error():
             assert response.status == 200 and response.read() == ring.image
     finally:
         ring.stop()
+
+
+def test_clip_route_serves_scripted_replies_and_the_presigned_clip(tmp_path):
+    from tests.fake_ring_server import CLIP_PRESIGNED_PATH, DEVICE_ID, synthetic_mp4
+
+    ring = FakeRing().start()
+    ring.clip = synthetic_mp4(tmp_path, fps=10, frames=20)
+    ring.clip_replies = [(425, None, "RECORDING_NOT_READY"), ("body", 206, {"X-Media-Length": "9"}), None]
+    no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    url = f"{ring.url}/v1/devices/{DEVICE_ID}/media/video/download"
+    try:
+        try:
+            no_proxy.open(urllib.request.Request(url, data=b"{}", method="POST"), timeout=5)
+            raise AssertionError("expected HTTP 425")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 425 and b"RECORDING_NOT_READY" in exc.read()
+        with no_proxy.open(urllib.request.Request(url, data=b"{}", method="POST"), timeout=5) as response:
+            assert response.status == 206 and response.headers["X-Media-Length"] == "9"
+            assert response.read()[4:8] == b"ftyp"
+        with no_proxy.open(f"{ring.url}{CLIP_PRESIGNED_PATH}", timeout=5) as response:
+            assert response.headers["Content-Type"] == "video/mp4" and response.read() == ring.clip
+    finally:
+        ring.stop()

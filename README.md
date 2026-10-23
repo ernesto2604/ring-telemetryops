@@ -74,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one; live video (WHEP / RTSPS) and video clips are **not implemented** (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one. Recorded clips (`POST /v1/devices/{id}/media/video/download`) and best-effort RTSPS live stream statistics are available on demand (see "Recorded clips" and "Live stream stats" below); WHEP live video in the browser is **not implemented** (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -503,12 +503,19 @@ Partner mode only; the simulator is unchanged.
 
 * **Required headers:** every Ring request sends `User-Agent: RingTelemetryOps/<version>` and a
   `Hardware_Id` UUID (`RING_PARTNER_HARDWARE_ID`, or a stable UUID5 derived from the computer name and
-  `RING_PARTNER_DEVICE_ID`). An HTTP 406 is shown as "Ring blocked the request: missing headers or a
-  datacenter IP"; it never switches the data source or substitutes simulated data. `X-RateLimit-Remaining`
+  `RING_PARTNER_DEVICE_ID`). An HTTP 406 is shown as "Ring blocked the request: required headers are
+  missing, the request came from a datacenter IP, or Ring Security blocked this IP (not retryable; contact
+  Ring developer support)"; it is not retried and never switches the data source or substitutes simulated data. `X-RateLimit-Remaining`
   is read and `Retry-After` is honoured on 429.
 * **Error reasons:** `/api/ring/status` returns `error_reason` (`missing_token`, `token_rejected`,
-  `blocked_406`, `rate_limited`, `device_offline_503`, `network_error`, `api_error`); the device card
-  shows a one-line explanation under the "Ring credentials error" header. The token is never shown.
+  `blocked_406`, `time_range_not_authorized`, `rate_limited`, `device_offline_503`, `network_error`,
+  `api_error`); the device card shows a one-line explanation under the "Ring credentials error" header.
+  The token is never shown.
+* **403 before consent:** a 403 whose JSON:API `code` is `TIME_RANGE_NOT_AUTHORIZED` (media download or
+  Event History) means the requested time is earlier than the user's consent, not a bad token. Its reason is
+  `time_range_not_authorized` ("Ring only allows access to recordings made after you connected this app; the
+  requested time is earlier."); "Analyze now" treats it as a failed candidate and tries the next event or
+  `latest_in_range`. A 403 without that code is still `token_rejected`.
 * **Device settings:** one `GET /v1/devices/{id}?include=status,capabilities,configurations,location`
   per device fills `device_context` (end-to-end encryption, motion detection and zones, night vision,
   HDR, privacy zones, video resolutions, coarse location, audio snooze). Values Ring does not report stay
@@ -535,7 +542,8 @@ Partner mode only; the simulator is unchanged.
   sharpness score and the banding measure. Ring snapshots are measured without the top
   `RING_WATERMARK_BAND_PX` rows (100 px, at most 35 % of the height; a project heuristic); the simulator
   and the sample videos are measured as before.
-* **In memory only:** Ring frames are never written to disk or logged. The last one is kept in memory and
+* **In memory only:** Ring frames are never written to disk or logged (the one exception is the
+  recorded-clip temporary file, deleted right after the analysis; see "Recorded clips"). The last one is kept in memory and
   served by `GET /api/ring/snapshot` (`Cache-Control: no-store`) for the Partner monitor, which shows it
   with Ring's time and origin.
 * **What reaches Bedrock:** a Ring image is sent only when the pre-check finds an image problem (blur,
@@ -552,7 +560,44 @@ Partner mode only; the simulator is unchanged.
   network and power `not_available`, because Ring does not share Wi-Fi or power data with partner apps).
   `diagnostic_status` is unchanged; the customer view says "Partial check" or "Not enough data" and the
   mitigation is written for the customer.
-* **Not implemented yet:** live video (WHEP / RTSPS) and video clips.
+* **Not implemented yet:** WHEP live video in the browser.
+
+#### Recorded clips (M2): "Analyze last recording (5 s)"
+
+* **Request:** `POST /api/ring/clip-analysis` asks Ring for 5 s without audio from the start of the newest
+  known event (`POST /v1/devices/{id}/media/video/download`, one `components` entry on multi-camera
+  devices). Ring's documentation describes two replies and both are handled: `200` / `206` (partial,
+  `X-Media-Length`) with the `video/mp4` body, or a `301` / `302` / `303` redirect whose pre-signed URL is
+  fetched **without** the access token. 416 / 425 are retried for about 20 s in total, 422 is classified as
+  for snapshots (`GRECO_NO_VALID_KEY` = could not decrypt), 403 `TIME_RANGE_NOT_AUTHORIZED` is explained,
+  401 / 403 / 406 keep their reasons. Only an MP4 (`ftyp` box) of at most 20 MB is analyzed. No clip is
+  requested for end-to-end encrypted video or without a known event.
+* **Temporary file (documented exception):** OpenCV cannot read an MP4 from memory, so the clip is written
+  to a temporary file in the system temp directory (created with `mkstemp`: owner-only permissions where
+  the OS supports them). It is deleted in a `finally` block, also when the analysis fails, and its path is
+  never logged or returned. This is the only exception to "Ring media stays in memory".
+* **What is measured:** duration (container frame count / fps), effective fps (frames actually decoded over
+  that duration), resolution and approximate bitrate (file size / duration). The three sharpest non-black
+  frames, measured without the watermark band, get the same image check as a snapshot: a healthy image
+  stays on the server, an image problem gets the same report and the same privacy rule.
+* **Not network metrics:** the UI shows "Recording stats (from Ring recording, not live network): 5.0 s ·
+  N fps · WxH · X Mbps" and the image verdict. These numbers describe the recording; they never fill the
+  Wi-Fi, jitter or packet-loss cards. The funnel counts clips requested, OK and failed by cause.
+
+#### Live stream stats (M4, best effort): "Live stream stats (8 s)"
+
+* **Implemented; verified only against a test double; not verified against a live Ring stream.**
+* `POST /api/ring/live-stats` opens `rtsps://video.rtsp.amazonvision.com:322/v1/devices/{id}/stream` with
+  OpenCV / FFmpeg over TCP (`OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`, set only around the open
+  and then restored). The token goes in `?token=`, because FFmpeg truncates long credentials in the URL user
+  part; the URL is never logged or returned. It reads for about 8 s (at most 10; Ring ends sessions after
+  30 s on battery and 60 s on line power) and reports effective fps, frame count and resolution. The bitrate
+  is not measured (OpenCV does not expose it). The capture is always released.
+* Not started for an offline or end-to-end encrypted device. When this OpenCV build cannot read the stream
+  the UI says "Live stream stats: not available (reason)": `rtsps_unavailable` (no FFmpeg / TLS, refused,
+  or rejected credentials, which OpenCV does not tell apart) or `rtsps_timeout`. That is not an app error.
+* The result is labelled "Live stream as received by this server": it is not the jitter or packet loss of
+  the home network.
 
 #### Alignment with Ring's Computer Vision Guidelines
 
@@ -562,7 +607,8 @@ Partner mode only; the simulator is unchanged.
   watermark band excluded, before any model sees them.
 * **Guardrails:** Bedrock answers are validated against the diagnostic contract (allowed values, findings
   and customer-text rules, one corrective retry) with a deterministic fallback when they still fail.
-* **Privacy:** Ring images are processed in memory, never stored or logged, and sent to Bedrock only for
+* **Privacy:** Ring images are processed in memory (a recorded clip only passes through a temporary file
+  that is deleted at once), never stored or logged, and sent to Bedrock only for
   an image anomaly; unreadable (encrypted) media is an expected outcome, not retried.
 
 ### Webhooks (implemented and tested with signed fixtures; not verified against live Ring webhooks, which need a public HTTPS URL and a registered app)
@@ -595,7 +641,8 @@ Partner mode only; the simulator is unchanged.
 stays on the server), pre-check anomaly, insufficient data, Bedrock calls and retries (a call that failed
 before the fallback counts), local fallbacks, snapshots OK and failed by cause, new events (Event
 History or webhooks) and feedback votes, plus median and p95 latency per engine (`bedrock`,
-`local_fallback`, `precheck`) over the last 100 analyses. They live in memory only and reset on restart;
+`local_fallback`, `precheck`) over the last 100 analyses, and recorded clips requested, OK and failed
+by cause (`clips_requested`, `clips_ok`, `clips_failed`). They live in memory only and reset on restart;
 no device IDs, images or free text. The engine panel shows them as "Funnel (this session)".
 
 ### User feedback
