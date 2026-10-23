@@ -461,6 +461,18 @@
         <p id="mitigation-text"></p>
       </div>
 
+      <!-- One "Was this helpful?" vote per report (POST /api/feedback) -->
+      <div class="feedback-box" id="feedback-box" style="display:none;">
+        <span class="feedback-question">Was this helpful?</span>
+        <button class="feedback-btn" id="feedback-up" onclick="sendFeedback('up')" aria-label="Helpful">👍</button>
+        <button class="feedback-btn" id="feedback-down" onclick="showFeedbackComment()" aria-label="Not helpful">👎</button>
+        <span class="feedback-row" id="feedback-comment-row" style="display:none;">
+          <input type="text" id="feedback-comment" maxlength="200" placeholder="What was wrong? (optional)" aria-label="Optional comment">
+          <button class="feedback-btn" id="feedback-send" onclick="sendFeedback('down')">Send</button>
+        </span>
+        <span class="feedback-status" id="feedback-status"></span>
+      </div>
+
       <!-- Technical view: for a support ticket, never part of the customer notification -->
       <details class="tech-details" id="tech-details">
         <summary>🛠️ Technical details (for support ticket)</summary>

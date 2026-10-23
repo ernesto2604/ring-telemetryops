@@ -1974,3 +1974,89 @@ test('T38: a failed metrics request keeps the previous line', async () => {
   await page.run('loadFunnelMetrics()');
   assert.equal(page.el('funnel-line').textContent, 'Funnel (this session): —');
 });
+
+// ---------------------------------------------------------------------------
+// T39: "Was this helpful?" buttons
+// ---------------------------------------------------------------------------
+
+const RATED_REPORT = {
+  report_id: '11111111-2222-3333-4444-555555555555', _provider: 'bedrock',
+  diagnostic_result: { diagnostic_status: 'DEGRADED', root_cause_domain: 'OPTICAL_PHYSICAL', confidence_score: 0.9,
+    telemetry_findings: [], visual_findings: [], recommended_mitigation: 'Clean the lens.' },
+};
+
+function ratedPage(feedbackRoute = { status: 200, body: { ok: true } }) {
+  return loadPage({ '/api/analyze': { status: 200, body: RATED_REPORT }, '/api/feedback': feedbackRoute });
+}
+
+const feedbackRequests = page => page.requests.filter(r => r.url === '/api/feedback');
+
+test('T39: a report shows "Was this helpful?" with enabled buttons', async () => {
+  const page = ratedPage();
+  await page.run('runManualDiagnosis()');
+  assert.equal(page.el('feedback-box').style.display, '');
+  assert.equal(page.el('feedback-up').disabled, false);
+  assert.equal(page.el('feedback-down').disabled, false);
+  assert.equal(page.el('feedback-status').textContent, '');
+});
+
+test('T39: 👍 sends one vote, says thanks and disables the buttons', async () => {
+  const page = ratedPage();
+  await page.run('runManualDiagnosis()');
+  await page.run("sendFeedback('up')");
+  assert.deepEqual(feedbackRequests(page).map(r => r.body), [{ report_id: RATED_REPORT.report_id, rating: 'up' }]);
+  assert.equal(page.el('feedback-status').textContent, 'Thanks for your feedback');
+  assert.equal(page.el('feedback-up').disabled, true);
+  assert.equal(page.el('feedback-down').disabled, true);
+  await page.run("sendFeedback('down')");
+  assert.equal(feedbackRequests(page).length, 1);   // one vote per report
+});
+
+test('T39: 👎 shows an optional comment, sent trimmed and at most 200 characters', async () => {
+  const page = ratedPage();
+  await page.run('runManualDiagnosis()');
+  page.run('showFeedbackComment()');
+  assert.equal(page.el('feedback-comment-row').style.display, '');
+  page.el('feedback-comment').value = `  ${'y'.repeat(250)}  `;
+  await page.run("sendFeedback('down')");
+  const [{ body }] = feedbackRequests(page);
+  assert.equal(body.rating, 'down');
+  assert.equal(body.comment, 'y'.repeat(200));
+  assert.equal(page.el('feedback-comment-row').style.display, 'none');
+  assert.equal(page.el('feedback-send').disabled, true);
+});
+
+test('T39: 👎 without a comment sends no comment field', async () => {
+  const page = ratedPage();
+  await page.run('runManualDiagnosis()');
+  page.run('showFeedbackComment()');
+  await page.run("sendFeedback('down')");
+  assert.deepEqual(feedbackRequests(page)[0].body, { report_id: RATED_REPORT.report_id, rating: 'down' });
+});
+
+test('T39: a failed vote keeps the buttons enabled and shows an error', async () => {
+  const page = ratedPage({ status: 503, body: { detail: 'Feedback could not be saved on the server; try again later.' } });
+  await page.run('runManualDiagnosis()');
+  await page.run("sendFeedback('up')");
+  assert.equal(page.el('feedback-up').disabled, false);
+  assert.equal(page.el('feedback-status').textContent, '');
+  assert.ok(page.toasts.some(t => t.type === 'error' && /Feedback not sent/.test(t.msg)));
+});
+
+test('T39: a new report enables the buttons again; the voted one stays disabled', async () => {
+  const page = ratedPage();
+  await page.run('runManualDiagnosis()');
+  await page.run("sendFeedback('up')");
+  page.run(`renderResult(${JSON.stringify(RATED_REPORT.diagnostic_result)}, { report_id: 'other-report' })`);
+  assert.equal(page.el('feedback-up').disabled, false);
+  assert.equal(page.el('feedback-status').textContent, '');
+  page.run(`renderResult(${JSON.stringify(RATED_REPORT.diagnostic_result)}, ${JSON.stringify(RATED_REPORT)})`);
+  assert.equal(page.el('feedback-up').disabled, true);
+  assert.equal(page.el('feedback-status').textContent, 'Thanks for your feedback');
+});
+
+test('T39: a report without report_id hides the feedback prompt', () => {
+  const page = loadPage();
+  page.run(`renderResult(${JSON.stringify(RATED_REPORT.diagnostic_result)}, {})`);
+  assert.equal(page.el('feedback-box').style.display, 'none');
+});

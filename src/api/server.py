@@ -21,16 +21,20 @@ Endpoints:
   POST /api/upload-video        → Uploads an MP4 video stream
   GET  /api/samples             → Lists available sample video clips
   GET  /api/metrics             → Analysis funnel counters since server start (in memory, no IDs or images)
+  POST /api/feedback            → "Was this helpful?" vote on a report (appended to data/feedback/feedback.jsonl)
 """
 
 import base64
+import json
 import logging
 import sys
 import time
 import os
 from uuid import uuid4
 from pathlib import Path
-from typing import Optional, Dict, Any
+from collections import OrderedDict, deque
+from datetime import datetime, timezone
+from typing import Literal, Optional, Dict, Any
 
 # Ensure project root is in sys.path
 ROOT = Path(__file__).resolve().parents[2]
@@ -805,11 +809,26 @@ def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, 
     return result
 
 
+# The last reports (id -> engine, severity, domain, voted), in memory only, to validate feedback votes.
+MAX_FEEDBACK_REPORTS = 100
+_recent_reports: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+
 def _run_concierge(**kwargs: Any) -> Dict[str, Any]:
-    """One concierge analysis, counted in the funnel metrics with its latency (simulator and Partner)."""
+    """
+    One concierge analysis, counted in the funnel metrics with its latency (simulator and Partner),
+    with a server-generated report_id that a feedback vote can refer to.
+    """
     started = time.perf_counter()
     result = SupportConcierge().process_stream(**kwargs)
     funnel.record_analysis(result, time.perf_counter() - started)
+    diag = result.get("diagnostic_result") or {}
+    report_id = str(uuid4())
+    _recent_reports[report_id] = {"engine": result.get("_provider"), "severity": diag.get("diagnostic_status"),
+                                  "domain": diag.get("root_cause_domain"), "voted": False}
+    while len(_recent_reports) > MAX_FEEDBACK_REPORTS:
+        _recent_reports.popitem(last=False)
+    result["report_id"] = report_id
     return result
 
 
@@ -952,6 +971,53 @@ async def analyze(req: AnalyzeRequest):
 async def get_metrics():
     """Analysis funnel counters and latencies since server start (memory only; no device IDs, images or text)."""
     return funnel.snapshot()
+
+
+FEEDBACK_FILE = ROOT / "data" / "feedback" / "feedback.jsonl"
+FEEDBACK_COMMENT_MAX_CHARS = 200
+FEEDBACK_RATE_LIMIT = 30          # votes per minute, for the whole server
+_feedback_times: deque = deque()
+
+
+class FeedbackRequest(BaseModel):
+    report_id: str = Field(max_length=64)
+    rating: Literal["up", "down"]
+    # Longer comments are cut to FEEDBACK_COMMENT_MAX_CHARS; this bound only stops oversized bodies.
+    comment: Optional[str] = Field(default=None, max_length=2000)
+
+
+@app.post("/api/feedback")
+async def post_feedback(req: FeedbackRequest):
+    """
+    One "Was this helpful?" vote per report. Appends one JSON line (time, report_id, engine, severity,
+    domain, rating, comment) to data/feedback/feedback.jsonl: no image, device ID or IP address.
+    """
+    now = time.monotonic()
+    while _feedback_times and now - _feedback_times[0] >= 60:
+        _feedback_times.popleft()
+    if len(_feedback_times) >= FEEDBACK_RATE_LIMIT:
+        raise HTTPException(status_code=429, headers={"Retry-After": "60"},
+                            detail="Too many feedback votes; try again in a minute.")
+    report = _recent_reports.get(req.report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired report_id.")
+    if report["voted"]:
+        raise HTTPException(status_code=409, detail="This report already has a vote.")
+    comment = " ".join((req.comment or "").split())[:FEEDBACK_COMMENT_MAX_CHARS] or None
+    line = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "report_id": req.report_id,
+            "engine": report["engine"], "severity": report["severity"], "domain": report["domain"],
+            "rating": req.rating, "comment": comment}
+    try:
+        FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(FEEDBACK_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        logger.warning("Feedback could not be saved (%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Feedback could not be saved on the server; try again later.") from None
+    _feedback_times.append(now)
+    report["voted"] = True
+    funnel.count("feedback_up" if req.rating == "up" else "feedback_down")
+    return {"ok": True, "report_id": req.report_id, "rating": req.rating}
 
 
 @app.post("/api/upload-video")

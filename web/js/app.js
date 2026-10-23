@@ -56,6 +56,7 @@ const state = {
   heartbeatAlertActive: false, // the shown report belongs to the open telemetry incident and is unresolved
   heartbeatIncident: 0,        // bumped when an incident ends (recovery, Reset): late answers are stale
   bedrockConfigured: null,     // from GET /api/engine: are AWS credentials available to the server?
+  feedbackReportId: null,      // report_id of the report on screen ("Was this helpful?")
 };
 
 // ------------------------------------------------------------------
@@ -844,6 +845,7 @@ function renderResult(diag, data = {}) {
   document.getElementById('conf-pct').textContent  = confidence + '%';
 
   document.getElementById('mitigation-text').textContent = diag.recommended_mitigation || '—';
+  showFeedbackPrompt(data.report_id);
 
   // Technical view (support ticket): findings, engine, deterministic level, KB articles, device ID.
   renderList('telemetry-findings', diag.telemetry_findings || []);
@@ -881,6 +883,53 @@ function renderResult(diag, data = {}) {
   const emptyRes = document.getElementById('empty-result');
   if (resCont) resCont.style.display = '';
   if (emptyRes) emptyRes.style.display = 'none';
+}
+
+// Report IDs this page already voted on: one vote per report.
+const votedReports = new Set();
+
+/** "Was this helpful?" under the mitigation: shown for server reports (report_id), disabled once voted. */
+function showFeedbackPrompt(reportId) {
+  state.feedbackReportId = reportId || null;
+  const box = document.getElementById('feedback-box');
+  if (box) box.style.display = reportId ? '' : 'none';
+  const voted = votedReports.has(reportId);
+  ['feedback-up', 'feedback-down', 'feedback-send'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = voted;
+  });
+  document.getElementById('feedback-comment-row').style.display = 'none';
+  document.getElementById('feedback-comment').value = '';
+  document.getElementById('feedback-status').textContent = voted ? 'Thanks for your feedback' : '';
+}
+
+/** 👎 asks for an optional short comment before the vote is sent. */
+function showFeedbackComment() {
+  document.getElementById('feedback-comment-row').style.display = '';
+}
+
+async function sendFeedback(rating) {
+  const reportId = state.feedbackReportId;
+  if (!reportId || votedReports.has(reportId)) return;
+  const comment = rating === 'down' ? document.getElementById('feedback-comment').value.trim().slice(0, 200) : '';
+  try {
+    const r = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report_id: reportId, rating, ...(comment ? { comment } : {}) }),
+    });
+    // 409: this report already has a vote (another tab); show it as done.
+    if (!r.ok && r.status !== 409) {
+      showToast(`❌ Feedback not sent: ${await responseErrorMessage(r)}`, 'error');
+      return;
+    }
+  } catch (err) {
+    showToast(`❌ Feedback not sent: ${err.message || 'network error'}`, 'error');
+    return;
+  }
+  votedReports.add(reportId);
+  if (state.feedbackReportId === reportId) showFeedbackPrompt(reportId);
+  loadFunnelMetrics();
 }
 
 function renderList(id, items) {
