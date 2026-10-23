@@ -297,6 +297,7 @@ test('Partner setup uses the configured poll interval and disables simulated con
   assert.equal(page.el('badge-online').style.display, '');
   assert.equal(page.el('btn-analyze-now').style.display, '');
   assert.equal(page.el('btn-analyze-clip').style.display, '');
+  assert.equal(page.el('btn-live-stats').style.display, '');
 });
 
 test('Simulator keeps its 15 s heartbeat and enabled controls', async () => {
@@ -2108,4 +2109,30 @@ test('T43: a credential error on the clip shows its hint', async () => {
   await page.run('runClipAnalysis()');
   assert.equal(page.el('partner-error-hint').textContent, RING_REASON_HINTS.token_rejected);
   assert.equal(page.el('ring-media-stats').textContent, 'Recording stats: not available (HTTP 401)');
+});
+
+// ---------------------------------------------------------------------------
+// T44: "Live stream stats (8 s)" (best effort; never shown as home-network jitter or loss)
+// ---------------------------------------------------------------------------
+
+test('T44: live stream stats are labelled as received by this server', async () => {
+  const page = loadPage({ '/api/ring/live-stats': { status: 200, body: { live: {
+    status: 'ok', reason: null, label: 'Live stream as received by this server', seconds: 8, fps: 14.9,
+    resolution: '1280x720', frame_count: 120, width: 1280, height: 720 } } } });
+  page.el('m-loss').textContent = 'N/D';
+
+  await page.run('runLiveStats()');
+
+  assert.equal(page.el('ring-live-stats').textContent,
+    'Live stream as received by this server: 8.0 s · 14.9 fps · 1280x720 · 120 frames');
+  assert.equal(page.el('m-loss').textContent, 'N/D');
+  assert.equal(page.el('btn-live-stats').disabled, false);
+});
+
+test('T44: an unavailable stream says why, as information and not an error', async () => {
+  const page = loadPage({ '/api/ring/live-stats': { status: 200, body: { live: {
+    status: 'not_available', reason: 'rtsps_unavailable', label: 'Live stream as received by this server' } } } });
+  await page.run('runLiveStats()');
+  assert.equal(page.el('ring-live-stats').textContent, 'Live stream stats: not available (rtsps_unavailable)');
+  assert.equal(page.toasts.length, 0);
 });

@@ -16,6 +16,7 @@ Endpoints:
   GET  /api/ring/snapshot       → Last Ring snapshot from memory (Partner mode, Cache-Control: no-store)
   GET  /api/ring/events         → Recent Ring Event History events and reports of new events with a problem
   POST /api/ring/clip-analysis  → Recording stats and image check of a 5 s Ring clip at the newest event
+  POST /api/ring/live-stats     → Best effort: fps / resolution of Ring's RTSPS live stream read for 8 s
   POST /api/ring/whep-session   → Simulated WHEP answer for the Digital Twin (501 in Partner mode)
   POST /api/telemetry           → Generates telemetry payload (custom sliders or presets)
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
@@ -826,6 +827,30 @@ async def ring_clip_analysis(device_id: Optional[str] = None):
     report["clip"] = {"status": "ok", "label": RECORDING_STATS_LABEL, **stats, "partial": result["partial"],
                       "frames_checked": len(frames)}
     return report
+
+
+LIVE_STATS_LABEL = "Live stream as received by this server"
+
+
+@app.post("/api/ring/live-stats")
+async def ring_live_stats(device_id: Optional[str] = None):
+    """
+    Best effort: reads Ring's RTSPS live stream for about 8 s on this server and reports the effective fps,
+    frame count and resolution. Not the home network's jitter or packet loss. Not started for an offline or
+    end-to-end encrypted device; when this OpenCV cannot read it, `reason` says why (not an app error).
+    """
+    client = _require_partner()
+    telemetry = await _partner_telemetry(device_id)
+    if (telemetry.get("device_context") or {}).get("media_readable") is False:
+        return {"source": "ring_partner_api", "live": {"status": "not_available", "reason": "media_encrypted"}}
+    if (telemetry.get("device_health") or {}).get("online") is not True:
+        return {"source": "ring_partner_api", "live": {"status": "not_available", "reason": "device_offline"}}
+    try:
+        live = await asyncio.to_thread(client.live_stream_stats, telemetry["device_id"],
+                                       first_component_id(telemetry.get("capabilities")))
+    except RingPartnerError as exc:
+        raise _partner_http_error(exc) from None
+    return {"source": "ring_partner_api", "live": {**live, "label": LIVE_STATS_LABEL}}
 
 
 # Event History polling (webhooks are not implemented). In memory: the last 20 events, the IDs

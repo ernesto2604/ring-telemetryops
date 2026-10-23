@@ -17,6 +17,9 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
                                              Recorded clip: 200/206 with the MP4, or a redirect to a
                                              pre-signed URL fetched without the token
   GET /v1/history/devices/{device_id}/events  Event History (paginated by links.next)
+  rtsps://video.rtsp.amazonvision.com:322/v1/devices/{device_id}/stream?token=...
+                                             Live stream read for a few seconds with OpenCV/FFmpeg (best
+                                             effort; verified only against a test double)
 
 REQUIRED HEADERS:
   - Every request sends `User-Agent: RingTelemetryOps/<version>` and `Hardware_Id: <UUID>`.
@@ -46,6 +49,7 @@ import math
 import os
 import re
 import socket
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -504,6 +508,21 @@ def _fetch_error(exc: Exception) -> Dict[str, Any]:
     }
 
 
+RTSPS_HOST = "rtsps://video.rtsp.amazonvision.com:322"
+LIVE_READ_SECONDS = 8.0
+LIVE_MAX_READ_SECONDS = 10.0
+LIVE_OPEN_TIMEOUT_MS = 8000
+LIVE_READ_TIMEOUT_MS = 5000
+FFMPEG_OPTIONS_ENV_VAR = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
+# OpenCV reads its FFmpeg options from the process environment when a capture opens: set them only
+# around that call, one opener at a time, and put back what was there.
+_FFMPEG_OPTIONS_LOCK = threading.Lock()
+
+
+def _live_result(reason: Optional[str], **stats: Any) -> Dict[str, Any]:
+    return {"status": "ok" if reason is None else "not_available", "reason": reason, **stats}
+
+
 # ---------------------------------------------------------------------------
 # HTTP client
 # ---------------------------------------------------------------------------
@@ -865,6 +884,69 @@ class RingPartnerClient:
                 break  # no next page (or not the documented relative URL)
             path, params = next_link, None
         return events
+
+    def live_stream_stats(self, device_id: str, component_id: Optional[str] = None,
+                          read_seconds: float = LIVE_READ_SECONDS,
+                          capture_factory: Optional[Callable[..., Any]] = None,
+                          clock: Callable[[], float] = time.monotonic) -> Dict[str, Any]:
+        """
+        Best effort (blocking; run it in a thread): opens Ring's RTSPS live stream with OpenCV/FFmpeg over
+        TCP, reads for `read_seconds` (at most LIVE_MAX_READ_SECONDS) and returns the effective fps, frame
+        count and resolution as received by this server. The bitrate is not measured (OpenCV does not
+        expose it). The token goes in `?token=` (FFmpeg truncates long credentials in the URL user part);
+        the URL is never logged, returned or put in a message. The capture is always released.
+
+        Returns {"status": "ok"|"not_available", "reason", ...stats}; reason "rtsps_unavailable" (this
+        OpenCV cannot open it: no FFmpeg/TLS, refused, or rejected credentials, which OpenCV does not tell
+        apart) or "rtsps_timeout" (opened but no frame in time, or the open hit its timeout).
+        """
+        if not self._token:
+            raise RingNotConfiguredError(f"{TOKEN_ENV_VAR} is not set; Ring API is unavailable.")
+        url = f"{RTSPS_HOST}{self._device_path(device_id)}/stream?token={quote(self._token, safe='')}"
+        if component_id:
+            url += f"&component_id={quote(component_id, safe='')}"
+        factory = capture_factory or cv2.VideoCapture
+        read_seconds = min(max(read_seconds, 0.0), LIVE_MAX_READ_SECONDS)
+        params = [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, LIVE_OPEN_TIMEOUT_MS, cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                  LIVE_READ_TIMEOUT_MS]
+        cap = None
+        started = clock()
+        try:
+            with _FFMPEG_OPTIONS_LOCK:
+                previous = os.environ.get(FFMPEG_OPTIONS_ENV_VAR)
+                os.environ[FFMPEG_OPTIONS_ENV_VAR] = "rtsp_transport;tcp"
+                try:
+                    cap = factory(url, cv2.CAP_FFMPEG, params)
+                finally:
+                    if previous is None:
+                        os.environ.pop(FFMPEG_OPTIONS_ENV_VAR, None)
+                    else:
+                        os.environ[FFMPEG_OPTIONS_ENV_VAR] = previous
+            if not cap.isOpened():
+                timed_out = clock() - started >= LIVE_OPEN_TIMEOUT_MS / 1000
+                return _live_result("rtsps_timeout" if timed_out else "rtsps_unavailable")
+            frames, first_at, last_at, width, height = 0, None, None, 0, 0
+            read_started = clock()
+            while clock() - read_started < read_seconds:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                last_at = clock()
+                first_at = last_at if first_at is None else first_at
+                frames += 1
+                height, width = frame.shape[:2]
+            if frames == 0:
+                return _live_result("rtsps_timeout")
+            span = (last_at - first_at) if last_at is not None else 0.0
+            return _live_result(None, frame_count=frames, fps=round((frames - 1) / span, 2) if span > 0 else None,
+                                width=width, height=height, resolution=f"{width}x{height}",
+                                seconds=round(clock() - read_started, 1))
+        except cv2.error:
+            logger.warning("[RingPartnerClient] RTSPS capture failed (cv2.error)")   # never the URL
+            return _live_result("rtsps_unavailable")
+        finally:
+            if cap is not None:
+                cap.release()
 
     # -- internals ----------------------------------------------------------
 

@@ -170,6 +170,8 @@ function applyPartnerModeUI() {
   if (analyzeBtn) analyzeBtn.style.display = '';
   const clipBtn = document.getElementById('btn-analyze-clip');
   if (clipBtn) clipBtn.style.display = '';
+  const liveBtn = document.getElementById('btn-live-stats');
+  if (liveBtn) liveBtn.style.display = '';
   const modeLabel = document.getElementById('autonomous-mode-label');
   if (modeLabel) modeLabel.textContent = '● Manual analysis (Ring Partner API)';
   const sourceLabel = document.getElementById('telemetry-source-label');
@@ -692,8 +694,34 @@ function clipStatsText(data) {
     + ` · ${clip.bitrate_mbps} Mbps` + (image ? ` · Image: ${image.detail}` : '');
 }
 
-function showRingMediaStats(text) {
-  const line = document.getElementById('ring-media-stats');
+/** "Live stream as received by this server: 8.0 s · 15 fps · 1280x720 · 120 frames" (not home-network jitter or loss). */
+function liveStatsText(live) {
+  if (!live || live.status !== 'ok') return `Live stream stats: not available (${(live && live.reason) || 'unknown'})`;
+  return `${live.label}: ${Number(live.seconds).toFixed(1)} s · ${live.fps ?? 'N/D'} fps · ${live.resolution}`
+    + ` · ${live.frame_count} frames`;
+}
+
+async function runLiveStats() {
+  const btn = document.getElementById('btn-live-stats');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Reading live stream…'; }
+  try {
+    const r = await fetch('/api/ring/live-stats', { method: 'POST' });
+    if (!r.ok) {
+      const detail = await responseErrorDetail(r);
+      renderRingErrorHint(detail.reason);
+      showRingMediaStats(`Live stream stats: not available (${detail.reason || detail.message})`, 'ring-live-stats');
+      return;
+    }
+    showRingMediaStats(liveStatsText((await r.json()).live), 'ring-live-stats');
+  } catch {
+    showRingMediaStats('Live stream stats: not available (server unreachable)', 'ring-live-stats');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📡 Live stream stats (8 s)'; }
+  }
+}
+
+function showRingMediaStats(text, id = 'ring-media-stats') {
+  const line = document.getElementById(id);
   if (!line) return;
   line.textContent = text;
   line.style.display = '';
