@@ -168,7 +168,7 @@ def test_sharp_snapshot_is_image_ok_without_bedrock(partner, capsys, caplog):
     assert response.status_code == 200
     assert llm_calls == []                                    # healthy frame: never sent to Bedrock
     assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
-    assert body["video_metrics"]["resolution"] == "720x364"   # watermark band cropped (1280x648 -> 720 px)
+    assert body["video_metrics"]["resolution"] == "720x348"   # watermark band cropped (1280x620 -> 720 px)
     assert body["snapshot"]["media_origin"] == "recording"
     assert "image" not in body["snapshot"]
     snap = api.get("/api/ring/snapshot")
@@ -189,7 +189,7 @@ def test_image_anomaly_reaches_bedrock_with_the_cropped_frame(partner, frame, is
     assert any(issue in i.lower() for i in body["video_metrics"]["issues"])
     assert llm_calls and llm_calls[0]["image"]               # the frame goes to Bedrock only now
     sent = cv2.imdecode(np.frombuffer(base64.b64decode(llm_calls[0]["image"]), np.uint8), cv2.IMREAD_COLOR)
-    assert sent.shape[:2] == (364, 720)                      # cropped and resized, not the raw Ring image
+    assert sent.shape[:2] == (348, 720)                      # cropped and resized, not the raw Ring image
 
 
 def test_healthy_frame_is_not_sent_when_another_metric_triggers_bedrock(partner):

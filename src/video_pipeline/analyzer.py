@@ -28,14 +28,46 @@ STREAM_MIN_BITRATE_KBPS = severity.limit("bitrate", "Low")
 STREAM_ISSUE_PREFIXES = ("Deficient frame rate", "Critically low bitrate")
 
 # Ring burns a mandatory watermark into all its media (logo top-left; device ID, app name and time
-# top-right). Its text raises the Laplacian variance, so Ring frames can be measured without the top
-# band. Heuristic of this project (the watermark sits in that band), not a Ring specification.
-RING_WATERMARK_TOP_FRACTION = 0.10
+# top-right). Its text raises the Laplacian variance and the row differences, so Ring frames are
+# measured without the top band. The watermark has a fixed size in pixels: on three Ring Playground
+# snapshots (1280x720, 1280x720, 640x360) its white text spans rows 15-85 in all of them, so a 10 %
+# band missed most of it on the 360-row frame. 100 px keeps a margin; the 35 % cap protects tiny frames.
+# Heuristic of this project, not a Ring specification.
+RING_WATERMARK_BAND_PX = 100
+RING_WATERMARK_MAX_FRACTION = 0.35
+
+# Banding limits. Row-difference std > 4.5 was calibrated on the simulator (flicker 15.8 in the browser,
+# 17.2 in the Python emulation). Detailed real outdoor scenes also exceed it without any flicker (Ring
+# Playground: parking 7.0, snowy porch 7.7 before cropping), so Ring frames also need a clear periodic
+# row profile: peak / median of the detrended row-profile spectrum, periods 4 rows to 1/4 of the height.
+# Measured peak / median (Ring frames: watermark cropped; at 720 px; JPEG q85):
+#   (a) three real Ring Playground frames: 6.6 (parking, std 7.0), 6.2 (motion, 2.1), 5.3 (package, 1.0);
+#   (b) synthetic natural scene (smooth noise + edges): clean 5.4; with sinusoidal bands of period
+#       24 rows, amplitude 10-15 %: 55-80 (std 4.4-6.4);
+#   (c) simulator 50/60Hz Flicker frames (old path, not gated): 35-107 (640-1920 px canvas), clean 7.4.
+# Limitation: the real calibration used only three Ring frames.
+BANDING_ROW_DIFF_STD_LIMIT = 4.5
+RING_BANDING_PERIODICITY_LIMIT = 12.0
 
 
 def crop_ring_watermark(frame: np.ndarray) -> np.ndarray:
-    """Drops the top RING_WATERMARK_TOP_FRACTION of the rows, where Ring draws its watermark."""
-    return frame[int(round(frame.shape[0] * RING_WATERMARK_TOP_FRACTION)):]
+    """Drops the top RING_WATERMARK_BAND_PX rows (at most RING_WATERMARK_MAX_FRACTION), Ring's watermark."""
+    return frame[min(RING_WATERMARK_BAND_PX, int(frame.shape[0] * RING_WATERMARK_MAX_FRACTION)):]
+
+
+def banding_periodicity(gray: np.ndarray) -> float:
+    """Peak / median of the detrended row-brightness spectrum, over periods of 4 rows to 1/4 of the height."""
+    profile = gray.mean(axis=1).astype(float)
+    n = len(profile)
+    if n < 32:
+        return 0.0
+    k = max(9, n // 16) | 1   # odd moving-average window that removes the slow scene trend
+    trend = np.convolve(np.pad(profile, k // 2, mode="edge"), np.ones(k) / k, mode="valid")
+    spectrum = np.abs(np.fft.rfft((profile - trend) * np.hanning(n)))
+    freqs = np.fft.rfftfreq(n)
+    in_range = spectrum[(freqs >= 4 / n) & (freqs <= 1 / 4)]
+    median = float(np.median(in_range))
+    return round(float(in_range.max()) / median, 2) if median > 0 else 0.0
 
 
 def sharpness_score(gray: np.ndarray) -> float:
@@ -213,7 +245,11 @@ class VideoAnalyzer:
             # Mathematical detection of horizontal rolling shutter banding (50Hz/60Hz AC light interference)
             row_profile = np.mean(gray, axis=1)
             row_diff_std = float(np.std(np.diff(row_profile)))
-            optical_banding_detected = row_diff_std > 4.5
+            optical_banding_detected = row_diff_std > BANDING_ROW_DIFF_STD_LIMIT
+            # Ring frames: real outdoor detail also varies a lot between rows, so require periodicity too.
+            if crop_watermark:
+                periodicity = banding_periodicity(gray)
+                optical_banding_detected = optical_banding_detected and periodicity > RING_BANDING_PERIODICITY_LIMIT
 
             if optical_banding_detected:
                 issues.append(f"Periodic horizontal video banding from 50Hz/60Hz LED frequency (rolling shutter variance {row_diff_std:.1f} > 4.5)")

@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 
 from src.video_pipeline.analyzer import (
-    RING_WATERMARK_TOP_FRACTION,
+    RING_WATERMARK_BAND_PX,
+    RING_WATERMARK_MAX_FRACTION,
     VideoAnalyzer,
     crop_ring_watermark,
     sharpness_score,
@@ -40,9 +41,11 @@ def sharpness(frame, crop):
     return VideoAnalyzer.analyze_frame_base64(as_png_base64(frame), crop_watermark=crop)[0]["sharpness_score"]
 
 
-def test_fraction_and_crop():
-    assert RING_WATERMARK_TOP_FRACTION == 0.10
-    assert crop_ring_watermark(np.zeros((720, 10))).shape == (648, 10)
+def test_fixed_pixel_band_and_crop():
+    assert (RING_WATERMARK_BAND_PX, RING_WATERMARK_MAX_FRACTION) == (100, 0.35)
+    assert crop_ring_watermark(np.zeros((720, 10))).shape == (620, 10)
+    assert crop_ring_watermark(np.zeros((360, 10))).shape == (260, 10)
+    assert crop_ring_watermark(np.zeros((200, 10))).shape == (130, 10)   # capped at 35 % of the height
 
 
 def test_watermark_inflates_sharpness_without_crop():
