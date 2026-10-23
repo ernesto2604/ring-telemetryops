@@ -22,9 +22,12 @@ Endpoints:
   GET  /api/samples             → Lists available sample video clips
   GET  /api/metrics             → Analysis funnel counters since server start (in memory, no IDs or images)
   POST /api/feedback            → "Was this helpful?" vote on a report (appended to data/feedback/feedback.jsonl)
+  POST /webhooks/ring           → Signed Ring webhooks (HMAC-SHA256, Partner mode only; 200 at once, processed after)
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import sys
@@ -40,7 +43,7 @@ from typing import Literal, Optional, Dict, Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -258,7 +261,7 @@ def _partner_monitoring() -> Dict[str, Any]:
     # Default gap tolerates three missed polls; it can never be shorter than one poll interval.
     gap = _env_int(OFFLINE_GAP_ENV_VAR, poll * 4, poll, MAX_OFFLINE_GAP_SECONDS)
     return {
-        "mechanism": "polling",          # webhooks are not implemented
+        "mechanism": "polling",          # Event History polling; signed webhooks also trigger analyses
         "status_endpoint": "GET /v1/devices/{device_id}/status",
         "poll_interval_seconds": poll,
         "offline_alert_consecutive_reads": _env_int(
@@ -566,7 +569,7 @@ async def get_ring_status():
             "device_count": len(devices),
             "devices": devices,
             "features": {"telemetry": True, "snapshot": _snapshot_available(devices), "whep": False,
-                         "webhooks": False},
+                         "webhooks": bool(os.getenv(WEBHOOK_KEY_ENV_VAR, "").strip())},
             "monitoring": _partner_monitoring(),
         }
 
@@ -867,7 +870,9 @@ async def get_ring_events():
                             detail={"source": "ring_partner_api", "reason": "rate_limited",
                                     "retry_after_seconds": wait, "message": "Ring asked to wait (Retry-After)."})
     poll_seconds = _partner_monitoring()["poll_interval_seconds"]
-    reports = []
+    # Webhook reports are handed over on every call, also when Ring is not queried this cycle.
+    reports = _webhook_reports[:]
+    _webhook_reports.clear()
     last = _events_poll["last_query"]
     if last is None or now - last >= poll_seconds:
         _events_poll["last_query"] = now
@@ -876,7 +881,7 @@ async def get_ring_events():
             devices = await _partner_devices()
             target = devices[0]["device_id"] if devices else None
         if target is None:
-            return {"source": "ring_partner_api", "events": [], "reports": []}
+            return {"source": "ring_partner_api", "events": [], "reports": reports}
         event_types = os.getenv(EVENT_TYPES_ENV_VAR, "").strip() or DEFAULT_EVENT_TYPES
         try:
             events = await client.list_events(target, event_types)
@@ -892,7 +897,9 @@ async def get_ring_events():
                 continue
             _seen_event_ids.add(event["id"])
             _partner_events.insert(0, event)
-            if event["start"] is not None and event["start"] > _SERVER_STARTED_MS:
+            # An event already analyzed from a webhook (same device, type and start ±10 s) is not analyzed again.
+            if (event["start"] is not None and event["start"] > _SERVER_STARTED_MS
+                    and _claim_event(target, event["event_type"], event["start"])):
                 new_events.append(event)
                 funnel.count("events_seen")
         del _partner_events[MAX_RECENT_EVENTS:]
@@ -902,6 +909,131 @@ async def get_ring_events():
             if status in ("DEGRADED", "CRITICAL"):
                 reports.append({"event": event, "trigger": EVENT_TRIGGERS.get(event["event_type"]), **result})
     return {"source": "ring_partner_api", "events": list(_partner_events), "reports": reports}
+
+
+# Analyses started by Event History or by webhooks: (device_id, event_type, start_ms), the last 1000.
+EVENT_MATCH_TOLERANCE_MS = 10_000
+_analyzed_event_keys: deque = deque(maxlen=1000)
+
+
+def _claim_event(device_id: str, event_type: Optional[str], start_ms: int) -> bool:
+    """True the first time an event is seen; False when Event History or a webhook already claimed it."""
+    if any(d == device_id and t == event_type and abs(s - start_ms) <= EVENT_MATCH_TOLERANCE_MS
+           for d, t, s in _analyzed_event_keys):
+        return False
+    _analyzed_event_keys.append((device_id, event_type, start_ms))
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Ring webhooks (signed with the app's HMAC key; Partner mode only)
+# ---------------------------------------------------------------------------
+
+WEBHOOK_KEY_ENV_VAR = "RING_PARTNER_HMAC_KEY"
+WEBHOOK_SKIP_ENV_VAR = "RING_WEBHOOK_SKIP_SUBTYPES"
+WEBHOOK_MAX_BODY_ENV_VAR = "RING_WEBHOOK_MAX_BODY_BYTES"
+DEFAULT_WEBHOOK_MAX_BODY_BYTES = 64 * 1024
+# Webhook type -> Event History event type (the same analysis and UI trigger as a polled event).
+WEBHOOK_ANALYZED_TYPES = {"motion_detected": "motion", "button_press": "ding"}
+WEBHOOK_DEVICE_TYPES = ("device_online", "device_offline", "device_added", "device_removed")
+_webhook_request_ids: deque = deque(maxlen=1000)
+# Webhook state in memory: deliveries per type and the last device_* type per device.
+_webhook_state: Dict[str, Any] = {"received": {}, "devices": {}}
+# Reports of webhook events with a problem, handed to the UI by the next GET /api/ring/events.
+_webhook_reports: list = []
+
+
+def _webhook_signature_ok(body: bytes, header: Optional[str], key: str) -> bool:
+    """X-Signature: sha256=<hex HMAC-SHA256 of the raw body>, compared in constant time."""
+    if not header or not header.startswith("sha256="):
+        return False
+    expected = hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header[len("sha256="):].strip().lower())
+
+
+async def _read_limited_body(request: Request, limit: int) -> bytes:
+    """The raw body, or 413 as soon as it exceeds `limit` bytes (checked while reading, not after)."""
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > limit:
+        raise HTTPException(status_code=413, detail="Webhook body too large.")
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > limit:
+            raise HTTPException(status_code=413, detail="Webhook body too large.")
+    return bytes(body)
+
+
+async def _process_webhook_event(device_id: str, event: Dict[str, Any]) -> None:
+    """Background analysis of a webhook event, as for a new Event History event: silence when healthy."""
+    result = await _analyze_partner_event(device_id, event)
+    status = ((result or {}).get("diagnostic_result") or {}).get("diagnostic_status")
+    if status in ("DEGRADED", "CRITICAL"):
+        _webhook_reports.append({"event": event, "trigger": EVENT_TRIGGERS.get(event["event_type"]), **result})
+        del _webhook_reports[:-MAX_RECENT_EVENTS]
+
+
+@app.post("/webhooks/ring", include_in_schema=False)
+async def ring_webhook(request: Request, background: BackgroundTasks):
+    """
+    Ring webhook receiver. The signature is checked on the raw body before any parsing; duplicates
+    (meta.request_id) and unknown types answer 200 without work. Ring expects 2xx within 5 s, so
+    motion_detected / button_press are analyzed after the response (BackgroundTasks).
+    """
+    if ring_source != "partner":
+        raise HTTPException(status_code=404, detail="Not Found")
+    key = os.getenv(WEBHOOK_KEY_ENV_VAR, "").strip()
+    if not key:
+        raise HTTPException(status_code=503, detail=f"{WEBHOOK_KEY_ENV_VAR} is not set: webhooks cannot be verified.")
+    limit = _env_int(WEBHOOK_MAX_BODY_ENV_VAR, DEFAULT_WEBHOOK_MAX_BODY_BYTES, 1024, 1024 * 1024)
+    body = await _read_limited_body(request, limit)
+    if not _webhook_signature_ok(body, request.headers.get("x-signature"), key):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Malformed JSON.")
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    attrs = data.get("attributes") if isinstance(data.get("attributes"), dict) else {}
+
+    request_id = meta.get("request_id")
+    if isinstance(request_id, str) and request_id:
+        if request_id in _webhook_request_ids:
+            return {"status": "duplicate"}
+        _webhook_request_ids.append(request_id)
+
+    kind = data.get("type")
+    if kind not in WEBHOOK_ANALYZED_TYPES and kind not in WEBHOOK_DEVICE_TYPES:
+        return {"status": "ignored"}        # a new Ring type must never break the receiver
+    _webhook_state["received"][kind] = _webhook_state["received"].get(kind, 0) + 1
+    device_id = attrs.get("source") if isinstance(attrs.get("source"), str) else None
+    if kind in WEBHOOK_DEVICE_TYPES:
+        if device_id:
+            _webhook_state["devices"][device_id] = kind
+        return {"status": "accepted"}
+
+    timestamp = attrs.get("timestamp")
+    if not device_id or not isinstance(timestamp, int) or isinstance(timestamp, bool):
+        return {"status": "ignored"}
+    event_type = WEBHOOK_ANALYZED_TYPES[kind]
+    sub_type = attrs.get("sub_type") if isinstance(attrs.get("sub_type"), str) else None
+    # A skipped event is claimed too, so Event History does not analyze it later either.
+    if not _claim_event(device_id, event_type, timestamp):
+        return {"status": "already_analyzed"}
+    funnel.count("events_seen")
+    skip = {x.strip().lower() for x in os.getenv(WEBHOOK_SKIP_ENV_VAR, "").split(",") if x.strip()}
+    if kind == "motion_detected" and sub_type and sub_type.lower() in skip:
+        return {"status": "skipped"}        # Stage 0 of Ring's vision funnel: cheap sub_type filter
+    event = {"id": data.get("id"), "event_type": event_type, "sub_type": sub_type, "start": timestamp,
+             "origin": "webhook"}
+    background.add_task(_process_webhook_event, device_id, event)
+    return {"status": "accepted"}
 
 
 @app.post("/api/analyze")

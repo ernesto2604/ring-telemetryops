@@ -349,6 +349,7 @@ def events_partner(partner, monkeypatch):
     monkeypatch.setattr(server, "_seen_event_ids", set())
     monkeypatch.setattr(server, "_events_poll", {"last_query": None, "paused_until": 0.0})
     monkeypatch.setattr(server, "_SERVER_STARTED_MS", 1_761_000_000_000)
+    monkeypatch.setattr(server, "_analyzed_event_keys", server.deque(maxlen=1000))
     return partner
 
 
