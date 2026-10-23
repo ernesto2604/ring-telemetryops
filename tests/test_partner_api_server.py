@@ -196,7 +196,7 @@ def test_status_and_devices_use_partner_client(partner_mode):
 
     assert status["mode"] == "LIVE" and status["source"] == "partner"
     assert status["device_count"] == 2
-    assert status["features"] == {"telemetry": True, "snapshot": False, "whep": False, "webhooks": False}
+    assert status["features"] == {"telemetry": True, "snapshot": False, "whep": True, "webhooks": False}
     assert devices.status_code == 200
     assert [d["device_id"] for d in devices.json()["devices"]] == [FRONT_ID, BACK_ID]
     assert partner_mode.calls == 2

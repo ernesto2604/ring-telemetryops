@@ -9,8 +9,11 @@ It implements, with fictitious data shaped like the documented JSON:API payloads
   GET  /media/presigned/{key}                  -> scripted replies, default the image or, for clip-*, the clip
                                                   (no Authorization expected)
   GET  /v1/history/devices/{id}/events         -> event pages linked by links.next
+  POST /v1/devices/{id}/media/streaming/whep/sessions -> scripted WHEP replies, default 201 + SDP answer
+                                                  + Location of a session on this server
+  DELETE /whep/sessions/{key}                  -> `whep_delete_status` (default 200)
 
-Every request is recorded in `requests` (method, path, query, headers, json body).
+Every request is recorded in `requests` (method, path, query, headers, json body, and the text of an SDP body).
 """
 import asyncio
 import threading
@@ -23,6 +26,9 @@ from aiohttp import web
 
 DEVICE_ID = "ava1.ring.device.FAKE1"
 PRESIGNED_PATH = "/media/presigned/snap-1"
+WHEP_SESSION_PATH = "/whep/sessions/fake-session-1"
+WHEP_ANSWER = ("v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+               "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=sendonly\r\na=rtpmap:96 H264/90000\r\n")
 CLIP_PRESIGNED_PATH = "/media/presigned/clip-1"
 
 
@@ -109,6 +115,11 @@ class FakeRing:
         self.event_pages: Dict[str, List[Dict[str, Any]]] = {"": []}
         self.event_links: Dict[str, str] = {}      # page key -> next page key
         self.events_error: Optional[tuple] = None   # (status, headers) or (status, headers, code)
+        # WHEP POST replies in order; the last one repeats. None -> 201 + WHEP_ANSWER + Location
+        # (`whep_location`, default this server's WHEP_SESSION_PATH); (status, headers, code) -> JSON:API error.
+        self.whep_replies: List[Optional[tuple]] = [None]
+        self.whep_location: Optional[str] = None
+        self.whep_delete_status = 200
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._runner: Optional[web.AppRunner] = None
         self.url = ""
@@ -144,6 +155,8 @@ class FakeRing:
         app.router.add_post("/v1/devices/{device_id}/media/video/download", self._clip)
         app.router.add_get("/media/presigned/{key}", self._presigned)
         app.router.add_get("/v1/history/devices/{device_id}/events", self._events)
+        app.router.add_post("/v1/devices/{device_id}/media/streaming/whep/sessions", self._whep)
+        app.router.add_delete("/whep/sessions/{key}", self._whep_delete)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, "127.0.0.1", 0)
@@ -160,9 +173,11 @@ class FakeRing:
 
     @web.middleware
     async def _record(self, request: web.Request, handler):
-        body = await request.json() if request.method == "POST" and request.can_read_body else None
+        sdp = request.method == "POST" and request.content_type == "application/sdp"
+        body = await request.json() if request.method == "POST" and request.can_read_body and not sdp else None
+        text = await request.text() if sdp else None
         self.requests.append({"method": request.method, "path": request.path, "query": dict(request.query),
-                              "headers": dict(request.headers), "json": body})
+                              "headers": dict(request.headers), "json": body, "text": text})
         return await handler(request)
 
     async def _devices(self, _request):
@@ -223,6 +238,17 @@ class FakeRing:
         if key in self.event_links:
             document["links"] = {"next": f"{request.path}?page[key]={self.event_links[key]}"}
         return web.json_response(document)
+
+    async def _whep(self, _request):
+        reply = self.whep_replies.pop(0) if len(self.whep_replies) > 1 else self.whep_replies[0]
+        if reply is None:
+            return web.Response(status=201, text=WHEP_ANSWER, content_type="application/sdp",
+                                headers={"Location": self.whep_location or f"{self.url}{WHEP_SESSION_PATH}"})
+        status, headers, code = reply
+        return jsonapi_error(status, code=code, headers=headers)
+
+    async def _whep_delete(self, _request):
+        return web.Response(status=self.whep_delete_status)
 
 
 def greco_no_valid_key() -> tuple:

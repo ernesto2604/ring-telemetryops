@@ -18,6 +18,8 @@ Endpoints:
   POST /api/ring/clip-analysis  → Recording stats and image check of a 5 s Ring clip at the newest event
   POST /api/ring/live-stats     → Best effort: fps / resolution of Ring's RTSPS live stream read for 8 s
   POST /api/ring/whep-session   → Simulated WHEP answer for the Digital Twin (501 in Partner mode)
+  POST /api/ring/whep/session   → Ring live view: the browser's SDP offer forwarded to Ring (Partner mode only)
+  DELETE /api/ring/whep/session/{session_id} → Closes that Ring live view session
   POST /api/telemetry           → Generates telemetry payload (custom sliders or presets)
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
   POST /api/upload-video        → Uploads an MP4 video stream
@@ -85,6 +87,7 @@ from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
 from src.video_pipeline.analyzer import STREAM_ISSUE_PREFIXES, VideoAnalyzer, analyze_clip
 from src.config import severity
 from src.api.funnel import funnel
+from src.api import whep
 
 logger = logging.getLogger(__name__)
 
@@ -576,7 +579,7 @@ async def get_ring_status():
             "error_reason": None,
             "device_count": len(devices),
             "devices": devices,
-            "features": {"telemetry": True, "snapshot": _snapshot_available(devices), "whep": False,
+            "features": {"telemetry": True, "snapshot": _snapshot_available(devices), "whep": True,
                          "webhooks": bool(os.getenv(WEBHOOK_KEY_ENV_VAR, "").strip())},
             "monitoring": _partner_monitoring(),
         }
@@ -618,19 +621,92 @@ async def get_ring_telemetry(device_id: Optional[str] = None):
 @app.post("/api/ring/whep-session")
 async def create_ring_whep_session(device_id: Optional[str] = None):
     """
-    Digital Twin only: returns a simulated WHEP answer labelled `simulated`. Ring Partner API
-    live streaming is not implemented, so Partner and error modes get HTTP 501.
+    Digital Twin only: returns a simulated WHEP answer labelled `simulated`. Partner and error modes get
+    HTTP 501: Ring's own live view goes through POST /api/ring/whep/session instead.
     """
     if ring_source == "partner" or ring_source_error:
-        # The Partner token is not used for WHEP; a simulated SDP answer would fake a live stream.
+        # A simulated SDP answer would fake a Ring live stream.
         raise HTTPException(
             status_code=501,
-            detail=f"Live view (WHEP) is not available for {RING_SOURCE_ENV_VAR}={ring_source}.",
+            detail=f"Simulated live view is not available for {RING_SOURCE_ENV_VAR}={ring_source}; "
+                   "Ring live view uses POST /api/ring/whep/session.",
         )
     return await ring_client.create_whep_session(
         device_id=device_id or ring_client.list_devices()[0]["id"],
         sdp_offer="",
     )
+
+
+class WhepOfferRequest(BaseModel):
+    sdp: str   # size and direction are checked by whep.validate_offer (400, not 422)
+
+
+def _whep_error(status: int, reason: str, upstream_status: Optional[int] = None,
+                headers: Optional[Dict[str, str]] = None, message: Optional[str] = None) -> HTTPException:
+    """Failure of a Ring live view request: reason and a customer sentence, never the token or a URL."""
+    detail = {"source": "ring_partner_api", "reason": reason, "upstream_status": upstream_status,
+              "message": message or whep.reason_text(reason)}
+    return HTTPException(status_code=status, detail=detail, headers=headers)
+
+
+def _whep_partner_error(exc: RingPartnerError) -> HTTPException:
+    mapped = _partner_http_error(exc)   # status code and Retry-After as for every Partner error
+    return _whep_error(mapped.status_code, mapped.detail["reason"], exc.status, mapped.headers)
+
+
+def _require_whep_mode() -> None:
+    if ring_source != "partner":
+        raise HTTPException(status_code=404,
+                            detail=f"Ring live view (WHEP) needs {RING_SOURCE_ENV_VAR}=partner.")
+
+
+@app.post("/api/ring/whep/session")
+async def open_ring_whep_session(req: WhepOfferRequest, device_id: Optional[str] = None):
+    """
+    Ring live view: forwards the browser's SDP offer (receive-only video) to Ring's WHEP endpoint with this
+    server's token and returns {session_id, sdp_answer, max_seconds_hint}. Ring's session URL stays here.
+    A new session closes the previous one; this server closes a forgotten one after 65 s.
+    """
+    _require_whep_mode()
+    try:
+        offer = whep.validate_offer(req.sdp)
+    except whep.WhepOfferError as exc:
+        funnel.record_whep_failure("invalid_offer")
+        raise _whep_error(400, "invalid_offer", message=f"{whep.reason_text('invalid_offer')} {exc}") from None
+    client = _require_partner()
+    telemetry = await _partner_telemetry(device_id)
+    try:
+        session = await whep.sessions.open(client, telemetry["device_id"], offer,
+                                           first_component_id(telemetry.get("capabilities")))
+    except RingPartnerError as exc:
+        error = _whep_partner_error(exc)
+        funnel.record_whep_failure(error.detail["reason"])
+        raise error from None
+    except whep.WhepSessionUrlError:
+        funnel.record_whep_failure("invalid_session_url")
+        raise _whep_error(502, "invalid_session_url", 201) from None
+    funnel.count("whep_started")
+    return {"source": "ring_partner_api", **session, "max_seconds_hint": whep.max_seconds_hint(telemetry)}
+
+
+@app.delete("/api/ring/whep/session/{session_id}")
+async def close_ring_whep_session(session_id: str):
+    """Closes a Ring live view session (DELETE to Ring; Ring's 404 means it had already ended)."""
+    _require_whep_mode()
+    try:
+        closed = await whep.sessions.close(session_id)
+    except RingPartnerError as exc:
+        raise _whep_partner_error(exc) from None
+    if not closed:
+        raise HTTPException(status_code=404, detail="Unknown or already closed live view session.")
+    return {"closed": True}
+
+
+async def _close_whep_sessions() -> None:
+    await whep.sessions.close_all()   # no Ring session outlives the app
+
+
+app.router.add_event_handler("shutdown", _close_whep_sessions)
 
 
 @app.post("/api/telemetry")

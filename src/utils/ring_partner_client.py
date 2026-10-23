@@ -517,6 +517,7 @@ FFMPEG_OPTIONS_ENV_VAR = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
 # OpenCV reads its FFmpeg options from the process environment when a capture opens: set them only
 # around that call, one opener at a time, and put back what was there.
 _FFMPEG_OPTIONS_LOCK = threading.Lock()
+WHEP_ANSWER_MAX_BYTES = 64 * 1024   # design limit for one SDP answer, not a Ring value
 
 
 def _live_result(reason: Optional[str], **stats: Any) -> Dict[str, Any]:
@@ -947,6 +948,66 @@ class RingPartnerClient:
         finally:
             if cap is not None:
                 cap.release()
+
+    async def create_whep_session(self, device_id: str, sdp_offer: str,
+                                  component_id: Optional[str] = None) -> tuple:
+        """
+        WHEP live view: POSTs the browser's SDP offer (Content-Type application/sdp) and returns
+        (sdp_answer, session_url) on 201 Created; session_url is the Location resolved against the base URL,
+        and the caller validates it before using it. Not retried: a retry could open a second session.
+        401/403/404/406/429/503 and other HTTP errors raise the typed errors. The SDP and the session URL
+        are never logged or put in a message.
+        """
+        if not self._token:
+            raise RingNotConfiguredError(f"{TOKEN_ENV_VAR} is not set; Ring API is unavailable.")
+        path = f"{self._device_path(device_id)}/media/streaming/whep/sessions"
+        params = {"component_id": component_id} if component_id else None
+        headers = {**self._headers(), "Content-Type": "application/sdp", "Accept": "application/sdp"}
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        answer = location = None
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(f"{self.base_url}{path}", params=params, data=sdp_offer.encode("utf-8"),
+                                        headers=headers, allow_redirects=False) as response:
+                    status = response.status
+                    if status == 201:
+                        answer = await self._read_limited(response, WHEP_ANSWER_MAX_BYTES)
+                        location = response.headers.get("Location")
+                    else:
+                        text = await response.text()
+                        retry_after = parse_retry_after(response.headers.get("Retry-After"))
+        except asyncio.TimeoutError:
+            raise RingTimeoutError(f"Ring API POST {path} timed out after {self.timeout_seconds}s") from None
+        except aiohttp.ClientError as exc:
+            raise RingPartnerError(f"Ring API POST {path} connection error ({type(exc).__name__})") from None
+        if status != 201:
+            raise self._error(status, text, path, retry_after, method="POST")
+        sdp = (answer or b"").decode("utf-8", "replace")
+        if not location or not sdp.startswith("v=0"):
+            raise RingPartnerError(f"Ring API POST {path} returned no usable SDP answer or session URL", status=201)
+        return sdp, urljoin(f"{self.base_url}/", location)
+
+    async def close_whep_session(self, session_url: str) -> None:
+        """
+        DELETE on a WHEP session URL the caller has validated (it carries the access token, so never an
+        unchecked host; redirects are not followed). 2xx or 404 (the session already ended) is success.
+        """
+        headers = {k: v for k, v in self._headers().items() if k != "Content-Type"}
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        label = "WHEP session"   # never the session URL
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.delete(session_url, headers=headers, allow_redirects=False) as response:
+                    status = response.status
+                    text = await response.text()
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+        except asyncio.TimeoutError:
+            raise RingTimeoutError(f"Ring API DELETE {label} timed out after {self.timeout_seconds}s") from None
+        except aiohttp.ClientError as exc:
+            raise RingPartnerError(f"Ring API DELETE {label} connection error ({type(exc).__name__})") from None
+        if 200 <= status < 300 or status == 404:
+            return
+        raise self._error(status, text, label, retry_after, method="DELETE")
 
     # -- internals ----------------------------------------------------------
 
