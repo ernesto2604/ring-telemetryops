@@ -74,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one. Recorded clips (`POST /v1/devices/{id}/media/video/download`) and best-effort RTSPS live stream statistics are available on demand (see "Recorded clips" and "Live stream stats" below); WHEP live video in the browser is **not implemented** (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is implemented with this server as the SDP intermediary (see "Ring live view" below). The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one. Recorded clips (`POST /v1/devices/{id}/media/video/download`) and best-effort RTSPS live stream statistics are available on demand (see "Recorded clips" and "Live stream stats" below); Ring live view (WHEP) in the browser is implemented and verified only with test doubles (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -367,7 +367,7 @@ Bedrock call)". In standby the camera monitor shows "Camera standby • no strea
 *Stop Camera* button (there is no stream to stop); the button appears while a session is active.
 
 In Partner mode the Digital Twin controls are disabled, the metric cards show only values
-Ring reported (`N/D` otherwise), the camera monitor shows no video, and diagnoses run with
+Ring reported (`N/D` otherwise), the camera monitor shows no video except during a Ring live view, and diagnoses run with
 **Analyze now**. Simulated elements of the Digital Twin (camera feed, chime, live view, WHEP
 answer) are labelled as simulated.
 
@@ -396,7 +396,7 @@ Run the automated test suite from the repository root:
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
-node --test tests/frontend/ui.test.mjs
+node --test tests/frontend/ui.test.mjs tests/frontend/whep.test.mjs
 ```
 
 The tests replace the Ring Partner API with local fakes or a server on 127.0.0.1 and replace
@@ -560,7 +560,6 @@ Partner mode only; the simulator is unchanged.
   network and power `not_available`, because Ring does not share Wi-Fi or power data with partner apps).
   `diagnostic_status` is unchanged; the customer view says "Partial check" or "Not enough data" and the
   mitigation is written for the customer.
-* **Not implemented yet:** WHEP live video in the browser.
 
 #### Recorded clips (M2): "Analyze last recording (5 s)"
 
@@ -598,6 +597,38 @@ Partner mode only; the simulator is unchanged.
   or rejected credentials, which OpenCV does not tell apart) or `rtsps_timeout`. That is not an app error.
 * The result is labelled "Live stream as received by this server": it is not the jitter or packet loss of
   the home network.
+
+#### Ring live view (M3, WHEP): "Ring live view (up to 60 s)"
+
+* **Implemented; verified only with test doubles (fake WHEP server and a stubbed RTCPeerConnection); not
+  verified against a live Ring session.**
+* **Why this server is in the middle:** Ring's API only accepts server-to-server calls (browsers are blocked
+  by CORS). The browser builds the SDP offer (receive-only video, no audio, public STUN
+  `stun:stun.l.google.com:19302`, handlers attached before the offer, ICE gathering awaited for at most 4 s)
+  and sends it to `POST /api/ring/whep/session`. This server checks it (at most 64 KB, `m=video`,
+  `a=recvonly`; `sendrecv` / `sendonly` get a 400), forwards it to
+  `POST /v1/devices/{id}/media/streaming/whep/sessions` (`Content-Type: application/sdp`, the token,
+  `User-Agent`, `Hardware_Id`, `component_id` on multi-camera devices) and returns only `session_id`
+  (128 random bits), the SDP answer and `max_seconds_hint` (30 s battery, 60 s wired). The browser never
+  receives the token or Ring's session URL (`Location`), and neither is logged.
+* **Session URL check:** the `Location` is used only if it is HTTPS (plain HTTP only on `127.0.0.1`, for
+  tests) on exactly Ring's API host; otherwise the session is dropped with `invalid_session_url` and nothing
+  (no `Authorization`) is sent there.
+* **What it does:** shows Ring's live video on the Partner monitor in place of the snapshot ("Ring live view ·
+  started HH:MM:SS", a countdown, **Stop**) and a line under the monitor with the browser's WebRTC stats:
+  "Live stream as received by this browser (Ring cloud to browser, not the doorbell's Wi-Fi): N fps · WxH ·
+  X Mbps · jitter N ms · lost N" (`getStats()` every second), kept as "Last live session: ..." afterwards.
+  That line is informative only: it never fills the Wi-Fi, battery, jitter or packet-loss cards or the
+  heartbeat, and it is separate from the server's RTSPS line above.
+* **What it does not do:** it does not analyze or store the browser's frames (in Partner mode client frames
+  are never presented as Ring data), and it makes one attempt per click (no automatic reconnection).
+* **One session at a time:** a new request closes the previous session first. The browser closes its
+  session (`DELETE /api/ring/whep/session/{session_id}`, with `keepalive` on page unload) on Stop, error,
+  `failed` / `disconnected` or the end of the session; Ring's 404 on that close means it had already ended.
+  A session the browser does not close is closed by this server after 65 s, and all are closed when the app
+  shuts down. Errors keep the existing reasons (`token_rejected`, `blocked_406`, `rate_limited`,
+  `device_offline_503`, `network_error`, ...) and are shown as "Ring live view is not available: ...". The
+  funnel counts sessions started, failed by reason and closed by the timer.
 
 #### Alignment with Ring's Computer Vision Guidelines
 
@@ -712,7 +743,8 @@ ring-telemetryops/
 │   │   └── knowledge_retriever.py            # Multimodal RAG Engine
 │   ├── api/
 │   │   ├── funnel.py                         # In-memory funnel counters (GET /api/metrics)
-│   │   └── server.py                         # FastAPI Web Server & REST endpoints
+│   │   ├── server.py                         # FastAPI Web Server & REST endpoints
+│   │   └── whep.py                           # Ring live view: SDP offer checks, WHEP sessions, 65 s timer
 │   ├── utils/
 │   │   ├── ring_client.py                    # Digital Twin adapter (simulated data only)
 │   │   ├── ring_partner_client.py            # Official Ring Partner API client (read-only)
@@ -729,12 +761,14 @@ ring-telemetryops/
 │   │   ├── app.js                            # Autonomous heartbeat & notification engine
 │   │   ├── canvas-engine.js                  # Video degradation & rendering engine
 │   │   ├── chime-audio.js                    # Web Audio chime tone synthesizer
-│   │   └── telemetry.js                      # Live slider & badge synchronizer
+│   │   ├── telemetry.js                      # Live slider & badge synchronizer
+│   │   └── whep.js                           # Ring live view (WHEP via this server) and WebRTC stats line
 │   └── index.html                            # Digital Twin interactive interface
 ├── tests/
 │   ├── conftest.py                           # Blanks Ring/AWS credentials, blocks real boto3 clients
 │   ├── test_*.py                             # pytest suites (API, agent, KB, Partner client, B1–B5)
-│   └── frontend/ui.test.mjs                  # Node tests for the web UI (fake DOM)
+│   ├── frontend/ui.test.mjs                  # Node tests for the web UI (fake DOM)
+│   └── frontend/whep.test.mjs                # Node tests for the Ring live view (stubbed RTCPeerConnection)
 ├── tools/
 │   └── send_test_webhook.py                  # Sends one signed test webhook to the local server
 ├── FRICTION_LOG.md                           # Hackathon Developer Experience Friction Log
