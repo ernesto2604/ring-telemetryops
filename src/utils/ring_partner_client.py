@@ -11,6 +11,8 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
                                              `included`); individual calls below are the fallback
   GET /v1/devices/{device_id}/status         Device Status
   GET /v1/devices/{device_id}/capabilities   Device Capabilities
+  POST /v1/devices/{device_id}/media/image/download, then GET of the pre-signed Location
+                                             Image snapshot (the token is never sent to that URL)
 
 REQUIRED HEADERS:
   - Every request sends `User-Agent: RingTelemetryOps/<version>` and `Hardware_Id: <UUID>`.
@@ -43,9 +45,11 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import aiohttp
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +381,37 @@ def build_device_context(
     }
 
 
+SNAPSHOT_WINDOW_MS = 24 * 3600 * 1000      # Ring's maximum latest_in_range window
+SNAPSHOT_WAIT_BUDGET_SECONDS = 15.0        # total wait for a recording that is not ready (Analyze now)
+SNAPSHOT_MAX_BYTES = 10 * 1024 * 1024      # design limit for one image, not a Ring value
+
+
+def _snapshot_result(status: str) -> Dict[str, Any]:
+    return {"status": status, "image": None, "content_type": None, "media_timestamp": None, "media_origin": None}
+
+
+def _image_type(data: bytes) -> Optional[str]:
+    """'image/jpeg' or 'image/png' when the bytes carry that signature and OpenCV decodes them."""
+    if data[:2] == b"\xff\xd8":
+        content_type = "image/jpeg"
+    elif data[:8] == b"\x89PNG\r\n\x1a\n":
+        content_type = "image/png"
+    else:
+        return None
+    decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    return content_type if decoded is not None else None
+
+
+def first_component_id(capability_attrs: Optional[Dict[str, Any]]) -> Optional[str]:
+    """First camera of a multi-camera device (`components.items[]`); None for a single camera."""
+    items = _sub(capability_attrs, "components").get("items")
+    if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+        return None
+    # shortcut: the docs show no item example; accept `component_id` or `id` until confirmed.
+    value = items[0].get("component_id") or items[0].get("id")
+    return value if isinstance(value, str) and value else None
+
+
 def _fetch_error(exc: Exception) -> Dict[str, Any]:
     """Serializable record of a failed per-device request (messages are already token-redacted)."""
     return {
@@ -530,7 +565,126 @@ class RingPartnerClient:
         resource = self._single_resource(await self._get_json(path), path)
         return {"device_id": device_id, "capabilities": _attributes(resource)}
 
+    async def download_snapshot(
+        self,
+        device_id: str,
+        at_timestamp_ms: Optional[int] = None,
+        component_id: Optional[str] = None,
+        wait_for_recording: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Ring image snapshot, server to server in two steps: POST .../media/image/download answers
+        303 with a pre-signed Location, then a GET of that URL WITHOUT the access token.
+
+        Latest image of the last 24 h, or the image at `at_timestamp_ms` (epoch ms, for an event).
+        No `resolution` is requested, so the fixed-size watermark covers the least of the image.
+        425 (recording not ready) is retried within SNAPSHOT_WAIT_BUDGET_SECONDS; with
+        `wait_for_recording`, 416 is too (an event's recording may not exist yet). 500/503 are
+        retried once; 422 never.
+
+        Returns {"status", "image", "content_type", "media_timestamp", "media_origin"}; `status` is
+        "ok", "no_recent_media" (416), "not_ready", "corrupt_recording" (422) or "unreadable" (not a
+        decodable JPEG/PNG within SNAPSHOT_MAX_BYTES). The image stays in memory: it is never logged.
+        Other HTTP errors raise the typed errors of `_get_json`.
+        """
+        if not self._token:
+            raise RingNotConfiguredError(f"{TOKEN_ENV_VAR} is not set; Ring API is unavailable.")
+        now_ms = int(time.time() * 1000)
+        if at_timestamp_ms is None:
+            body: Dict[str, Any] = {"type": "latest_in_range", "start_timestamp": now_ms - SNAPSHOT_WINDOW_MS,
+                                    "end_timestamp": now_ms}
+        else:
+            body = {"type": "at_timestamp", "timestamp": int(at_timestamp_ms)}
+        body["image_options"] = {"format": "jpeg"}
+        if component_id:
+            body["components"] = [{"component_id": component_id}]
+        path = f"{self._device_path(device_id)}/media/image/download"
+
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        waited = 0.0
+        attempt = 0
+        retried_server_error = False
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            while True:
+                try:
+                    async with session.post(f"{self.base_url}{path}", json=body, headers=self._headers(),
+                                            allow_redirects=False) as response:
+                        status = response.status
+                        text = await response.text()
+                        location = response.headers.get("Location")
+                        retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                except asyncio.TimeoutError:
+                    raise RingTimeoutError(
+                        f"Ring API POST {path} timed out after {self.timeout_seconds}s") from None
+                except aiohttp.ClientError as exc:
+                    raise RingPartnerError(f"Ring API POST {path} connection error ({type(exc).__name__})") from None
+
+                if status == 303 and location:
+                    break
+                if status == 422:
+                    return _snapshot_result("corrupt_recording")
+                if status == 425 or (status == 416 and wait_for_recording):
+                    attempt += 1
+                    delay = retry_after if retry_after is not None else TRANSIENT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+                    if waited + delay > SNAPSHOT_WAIT_BUDGET_SECONDS:
+                        return _snapshot_result("not_ready" if status == 425 else "no_recent_media")
+                    waited += delay
+                    await self._sleep(delay)
+                    continue
+                if status == 416:
+                    return _snapshot_result("no_recent_media")
+                if status in (500, 503) and not retried_server_error and (
+                        retry_after is None or retry_after <= self.max_retry_after_seconds):
+                    retried_server_error = True
+                    await self._backoff(path, f"HTTP {status}", 1, retry_after)
+                    continue
+                if status == 303:
+                    raise RingPartnerError(f"Ring API POST {path} answered 303 without a Location", status=303)
+                raise self._error(status, text, path, retry_after, method="POST")
+
+            return await self._fetch_presigned(session, urljoin(f"{self.base_url}/", location))
+
+    async def _fetch_presigned(self, session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
+        """GET of the pre-signed media URL: no Authorization header (the token never goes there)."""
+        if urlsplit(url).scheme not in ("http", "https"):
+            return _snapshot_result("unreadable")
+        try:
+            async with session.get(url, headers={"User-Agent": USER_AGENT}, allow_redirects=False) as response:
+                if response.status != 200:
+                    return _snapshot_result("unreadable")
+                declared = response.headers.get("Content-Length", "")
+                if declared.isdigit() and int(declared) > SNAPSHOT_MAX_BYTES:
+                    return _snapshot_result("unreadable")
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > SNAPSHOT_MAX_BYTES:
+                        return _snapshot_result("unreadable")
+                media_timestamp = response.headers.get("X-Media-Timestamp", "").strip()
+                media_origin = response.headers.get("X-Media-Origin")
+        except asyncio.TimeoutError:
+            raise RingTimeoutError(f"Ring media download timed out after {self.timeout_seconds}s") from None
+        except aiohttp.ClientError as exc:
+            # The pre-signed URL is a credential too: it never appears in messages.
+            raise RingPartnerError(f"Ring media download connection error ({type(exc).__name__})") from None
+
+        content_type = _image_type(bytes(data))
+        if content_type is None:
+            return _snapshot_result("unreadable")
+        return {**_snapshot_result("ok"), "image": bytes(data), "content_type": content_type,
+                "media_timestamp": int(media_timestamp) if media_timestamp.isdigit() else None,
+                "media_origin": media_origin if isinstance(media_origin, str) else None}
+
     # -- internals ----------------------------------------------------------
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+            "Hardware_Id": self.hardware_id,
+        }
 
     @staticmethod
     def _device_path(device_id: str) -> str:
@@ -549,7 +703,8 @@ class RingPartnerClient:
             raise RingPartnerError(f"Ring API GET {path} returned no 'data' object")
         return resource
 
-    def _error(self, status: int, body: str, path: str, retry_after: Optional[float]) -> RingPartnerError:
+    def _error(self, status: int, body: str, path: str, retry_after: Optional[float],
+               method: str = "GET") -> RingPartnerError:
         """Builds a typed error from the documented JSON:API format errors[{status, title, detail}]."""
         fields: Dict[str, Optional[str]] = {"code": None, "title": None, "detail": None}
         try:
@@ -562,9 +717,9 @@ class RingPartnerClient:
         except (ValueError, AttributeError):
             pass  # non-JSON body (e.g. a proxy HTML page): keep only the HTTP status
 
-        message = f"Ring API GET {path} failed with HTTP {status}"
+        message = f"Ring API {method} {path} failed with HTTP {status}"
         if status == 406:
-            message = f"Ring blocked the request: missing headers or a datacenter IP (GET {path}, HTTP 406)"
+            message = f"Ring blocked the request: missing headers or a datacenter IP ({method} {path}, HTTP 406)"
         reason = " — ".join(v for v in (fields["title"], fields["detail"]) if v)
         if reason:
             message += f": {reason}"
@@ -584,13 +739,7 @@ class RingPartnerClient:
             raise RingNotConfiguredError(f"{TOKEN_ENV_VAR} is not set; Ring API is unavailable.")
 
         url = f"{self.base_url}{path}"
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": USER_AGENT,
-            "Hardware_Id": self.hardware_id,
-        }
+        headers = self._headers()
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         retries = 0
         transient_retries = 0

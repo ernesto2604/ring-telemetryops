@@ -13,6 +13,7 @@ Endpoints:
   GET  /api/ring/status         → Ring data source and mode (MOCK / LIVE / ERROR)
   GET  /api/ring/devices        → Ring Partner API devices (RING_DATA_SOURCE=partner)
   GET  /api/ring/telemetry      → Ring Partner API device status as telemetry (no video / WebRTC data)
+  GET  /api/ring/snapshot       → Last Ring snapshot from memory (Partner mode, Cache-Control: no-store)
   POST /api/ring/whep-session   → Simulated WHEP answer for the Digital Twin (501 in Partner mode)
   POST /api/telemetry           → Generates telemetry payload (custom sliders or presets)
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
@@ -20,6 +21,7 @@ Endpoints:
   GET  /api/samples             → Lists available sample video clips
 """
 
+import base64
 import logging
 import sys
 import os
@@ -33,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
@@ -58,6 +60,7 @@ from src.utils.ring_partner_client import (
     RingServiceUnavailableError,
     RingTimeoutError,
     RingUnauthorizedError,
+    first_component_id,
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
 from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
@@ -77,12 +80,19 @@ app = FastAPI(
 RING_SOURCE_ENV_VAR = "RING_DATA_SOURCE"
 RING_SOURCES = ("simulator", "partner")
 PARTNER_NO_FRAME_REASON = (
-    "No video frame available: Ring Partner API image retrieval is not integrated yet. "
+    "No video frame available: Ring does not report snapshot support for this device. "
     "This diagnosis uses device telemetry only."
 )
 E2E_ENCRYPTED_REASON = (
     "Video is end-to-end encrypted: image analysis is not possible; diagnosis uses device status only"
 )
+# Why a snapshot request produced no image (client status -> visual finding).
+SNAPSHOT_REASONS = {
+    "no_recent_media": "No recent recording available from Ring: snapshots come from existing recordings",
+    "not_ready": "Ring's recording was not ready in time: no image was analyzed",
+    "corrupt_recording": "Ring reported the recording as corrupt: no image was analyzed",
+    "unreadable": "Ring returned an image that could not be read: no image was analyzed",
+}
 # `_source` of telemetry sent in the request body: set by the server, never taken from the caller.
 CLIENT_TELEMETRY_SOURCE = "client_supplied"
 
@@ -614,6 +624,53 @@ async def generate_telemetry(req: TelemetryRequest):
         return _build_custom_telemetry(req)
 
 
+# Last Ring snapshot, in memory only (never written to disk or logged); served by /api/ring/snapshot.
+_latest_snapshot: Optional[Dict[str, Any]] = None
+
+
+async def _partner_snapshot(telemetry: Dict[str, Any], at_timestamp_ms: Optional[int] = None) -> tuple:
+    """
+    (frame_base64, no_frame_reason, snapshot_meta) for one Partner device. No request when the
+    video is end-to-end encrypted or the device does not list snapshot support. Credential errors
+    raise as HTTP errors (T21 reasons); other failures leave a telemetry-only diagnosis.
+    """
+    global _latest_snapshot
+    context = telemetry.get("device_context") or {}
+    if context.get("media_readable") is False:
+        return None, E2E_ENCRYPTED_REASON, None
+    if context.get("snapshot_supported") is not True:
+        return None, PARTNER_NO_FRAME_REASON, None
+    try:
+        result = await partner_client.download_snapshot(
+            telemetry["device_id"], at_timestamp_ms=at_timestamp_ms,
+            component_id=first_component_id(telemetry.get("capabilities")),
+            wait_for_recording=at_timestamp_ms is not None,
+        )
+    except (RingUnauthorizedError, RingForbiddenError, RingBlockedError, RingNotConfiguredError) as exc:
+        raise _partner_http_error(exc) from None
+    except RingPartnerError as exc:
+        return None, f"Ring could not provide a snapshot ({_partner_error_reason(exc)}): no image was analyzed", None
+    if result["status"] != "ok":
+        return None, SNAPSHOT_REASONS[result["status"]], None
+    meta = {"device_id": telemetry["device_id"], "media_timestamp": result["media_timestamp"],
+            "media_origin": result["media_origin"], "content_type": result["content_type"]}
+    _latest_snapshot = {**meta, "image": result["image"]}
+    return base64.b64encode(result["image"]).decode("ascii"), None, meta
+
+
+@app.get("/api/ring/snapshot")
+async def get_ring_snapshot():
+    """The last Ring snapshot from memory (never cached by the browser), or 404."""
+    if _latest_snapshot is None:
+        raise HTTPException(status_code=404, detail="No Ring snapshot in memory yet: run Analyze now.")
+    headers = {"Cache-Control": "no-store"}
+    if _latest_snapshot["media_timestamp"] is not None:
+        headers["X-Media-Timestamp"] = str(_latest_snapshot["media_timestamp"])
+    if _latest_snapshot["media_origin"]:
+        headers["X-Media-Origin"] = _latest_snapshot["media_origin"]
+    return Response(content=_latest_snapshot["image"], media_type=_latest_snapshot["content_type"], headers=headers)
+
+
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest):
     """Full diagnostic pipeline: video/canvas keyframe + telemetry + LLM -> diagnostic report."""
@@ -632,14 +689,13 @@ async def analyze(req: AnalyzeRequest):
     )
     if wants_live and ring_source_error:
         raise HTTPException(status_code=503, detail=ring_source_error)
+    snapshot = None
     if wants_live and ring_source == "partner":
         # Always official telemetry; caller-supplied telemetry is not presented as Ring data.
         telemetry = await _partner_telemetry(req.device_id)
-        # Ring image retrieval is not integrated: a caller frame is not a Ring camera image, and
-        # the caller's camera_active is not Ring data. Telemetry-only diagnosis that says so.
-        frame_base64 = None
-        encrypted = (telemetry.get("device_context") or {}).get("media_readable") is False
-        no_frame_reason = E2E_ENCRYPTED_REASON if encrypted else PARTNER_NO_FRAME_REASON
+        # Only a Ring snapshot is a Ring camera image: the caller's frame and camera_active are ignored.
+        frame_base64, no_frame_reason, snapshot = await _partner_snapshot(telemetry)
+        camera_active = True
     elif wants_live:
         # Ring data was requested but Partner is not the selected source: explicit error, no Twin fallback.
         raise HTTPException(
@@ -664,7 +720,10 @@ async def analyze(req: AnalyzeRequest):
             frame_base64=frame_base64,
             camera_active=camera_active,
             no_frame_reason=no_frame_reason,
+            ring_media=snapshot is not None,
         )
+        if snapshot is not None:
+            result["snapshot"] = snapshot
         return result
     except ValueError:
         # Undecodable frame or unreadable video; details (paths) stay in the server log.

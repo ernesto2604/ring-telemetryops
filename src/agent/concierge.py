@@ -431,6 +431,9 @@ def _offline_diagnostic(telemetry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+RING_SNAPSHOT_OK_FINDING = "Ring snapshot checked: image OK (no blur, tint, banding or brightness issue)."
+
+
 def _insufficient_data_diagnostic(missing: list[str], camera_active: bool) -> Dict[str, Any]:
     """Report for a device with no detected anomaly but without the data to call it healthy."""
     return {
@@ -913,11 +916,14 @@ class SupportConcierge:
         frame_base64: Optional[str] = None,
         camera_active: bool = True,
         no_frame_reason: Optional[str] = None,
+        ring_media: bool = False,
     ) -> Dict[str, Any]:
         """
         Executes end-to-end multimodal diagnostic pipeline.
         `no_frame_reason`: the camera may be active but no frame can be obtained;
         runs a telemetry-only diagnosis that states this reason (never "standby").
+        `ring_media`: `frame_base64` is a Ring snapshot. Its watermark band is cropped before
+        measuring, and the image is sent to Bedrock only when the pre-check finds an image anomaly.
         Steps:
         1. Quantitative video telemetry extraction (OpenCV or live Canvas frame).
         2. Base64 keyframe extraction for multimodal reasoning.
@@ -973,6 +979,7 @@ class SupportConcierge:
                 telemetry=telemetry,
                 max_width=720,
                 jpeg_quality=75,
+                crop_watermark=ring_media,
             )
             print(f"      Stream status: {video_metrics['status']} | "
                   f"Sharpness: {video_metrics['sharpness_score']} | "
@@ -1023,7 +1030,8 @@ class SupportConcierge:
             print(f"[3/4] Pre-check: no anomaly, but essential metrics are unavailable: {missing}; skipping SOP retrieval")
             print("[4/4] Not enough measured data: reasoning engine not invoked")
             report = _insufficient_data_diagnostic(missing, video_available)
-            report["visual_findings"] = [no_video_finding] if no_video_finding else []
+            report["visual_findings"] = (
+                [no_video_finding] if no_video_finding else [RING_SNAPSHOT_OK_FINDING] if ring_media else [])
             return finish({
                 "video_metrics": video_metrics,
                 "telemetry": telemetry,
@@ -1040,6 +1048,8 @@ class SupportConcierge:
             report = _nominal_diagnostic(video_available)
             if no_video_finding:
                 report["visual_findings"] = [no_video_finding]
+            elif ring_media:
+                report["visual_findings"] = [RING_SNAPSHOT_OK_FINDING]
             return finish({
                 "video_metrics": video_metrics,
                 "telemetry": telemetry,
@@ -1085,6 +1095,16 @@ class SupportConcierge:
                 "In 'visual_findings' you MUST output ONLY: ['Camera in low-power standby mode. Optical sensor powered down by design.']. "
                 "Do NOT describe or mention persons, walls, bricks, or visual elements. "
                 "Your diagnosis and recommendations must be based EXCLUSIVELY on device telemetry (Wi-Fi, WebRTC, battery)."
+            )
+        elif ring_media and not any(a["metric"] == "video" for a in anomaly["anomalies"]):
+            # Privacy: a Ring image that passed the local checks never leaves the server.
+            image_base64 = None
+            standby_note = "CAMERA STATE: RING SNAPSHOT CHECKED LOCALLY (no image issue found; image not attached)"
+            visual_instruction = (
+                "IMPORTANT: The Ring snapshot passed the local image checks (sharpness, brightness, tint, banding) "
+                "and is NOT attached. In 'visual_findings' you MUST output ONLY: "
+                f"[{json.dumps(RING_SNAPSHOT_OK_FINDING)}]. "
+                "Base the diagnosis EXCLUSIVELY on the measured telemetry above."
             )
         else:
             standby_note = "CAMERA STATE: ACTIVE (Doorbell Ding, PIR Motion, or Live View)"

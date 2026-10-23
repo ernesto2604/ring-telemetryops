@@ -60,3 +60,239 @@ def test_status_feature_snapshot_reflects_support_and_readability(monkeypatch, s
     monkeypatch.setattr(server, "_partner_known_devices", {})
 
     assert TestClient(server.app).get("/api/ring/status").json()["features"]["snapshot"] is available
+
+
+# ---------------------------------------------------------------------------
+# T27: Ring snapshot (two steps) and Analyze now
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+import base64  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+import src.api.server as server  # noqa: E402
+from src.agent.concierge import RING_SNAPSHOT_OK_FINDING, SupportConcierge  # noqa: E402
+from src.utils.ring_partner_client import SNAPSHOT_WINDOW_MS, RingPartnerClient  # noqa: E402
+from tests.fake_ring_server import (  # noqa: E402
+    DEVICE_ID, PRESIGNED_PATH, FakeRing, blurry_frame, jpeg, pink_frame, sharp_frame,
+)
+
+TOKEN = "fake-snapshot-token-4455667788"
+SNAPSHOT_POST = f"/v1/devices/{DEVICE_ID}/media/image/download"
+api = TestClient(server.app)
+
+
+@pytest.fixture
+def ring(monkeypatch):
+    fake = FakeRing().start()
+    monkeypatch.setenv("RING_PARTNER_ACCESS_TOKEN", TOKEN)
+    monkeypatch.setenv("RING_PARTNER_BASE_URL", fake.url)
+    monkeypatch.delenv("RING_PARTNER_DEVICE_ID", raising=False)
+    yield fake
+    fake.stop()
+
+
+@pytest.fixture
+def sleeps():
+    return []
+
+
+@pytest.fixture
+def partner(ring, sleeps, monkeypatch):
+    """Server in Partner mode with the real client against the fake Ring; Bedrock is a double."""
+    async def no_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(server, "ring_source", "partner")
+    monkeypatch.setattr(server, "ring_source_error", None)
+    monkeypatch.setattr(server, "partner_client", RingPartnerClient(sleep=no_sleep))
+    monkeypatch.setattr(server, "_partner_known_devices", {})
+    monkeypatch.setattr(server, "_latest_snapshot", None)
+    llm_calls = []
+
+    def fake_llm(self, prompt, image_base64):
+        llm_calls.append({"prompt": prompt, "image": image_base64})
+        return "not json"   # deterministic fallback afterwards; no Bedrock
+
+    monkeypatch.setattr(SupportConcierge, "_call_llm", fake_llm)
+
+    def no_disk(*_args, **_kwargs):
+        raise AssertionError("Ring frames must never be written to disk")
+
+    monkeypatch.setattr(cv2, "imwrite", no_disk)
+    return ring, llm_calls
+
+
+def analyze():
+    return api.post("/api/analyze", json={"source_mode": "ring", "camera_active": False})
+
+
+def test_two_step_download_sends_no_token_to_the_presigned_url(ring):
+    result = asyncio.run(RingPartnerClient().download_snapshot(DEVICE_ID))
+
+    assert result["status"] == "ok" and result["content_type"] == "image/jpeg"
+    assert result["media_timestamp"] == 1761210000000 and result["media_origin"] == "recording"
+    post, presigned = ring.requests
+    assert post["method"] == "POST" and post["path"] == SNAPSHOT_POST
+    assert post["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert post["headers"]["User-Agent"].startswith("RingTelemetryOps/") and post["headers"]["Hardware_Id"]
+    body = post["json"]
+    assert body["type"] == "latest_in_range" and body["image_options"] == {"format": "jpeg"}
+    assert body["end_timestamp"] - body["start_timestamp"] == SNAPSHOT_WINDOW_MS
+    assert "resolution" not in json.dumps(body) and "components" not in body
+    assert presigned["path"] == PRESIGNED_PATH
+    assert "Authorization" not in presigned["headers"]
+    assert TOKEN not in json.dumps(presigned["headers"])
+
+
+def test_at_timestamp_and_multi_camera_component(ring):
+    asyncio.run(RingPartnerClient().download_snapshot(DEVICE_ID, at_timestamp_ms=1761210000123,
+                                                      component_id="cam-left"))
+    body = ring.requests[0]["json"]
+    assert body["type"] == "at_timestamp" and body["timestamp"] == 1761210000123
+    assert body["components"] == [{"component_id": "cam-left"}]
+
+
+def test_sharp_snapshot_is_image_ok_without_bedrock(partner, capsys, caplog):
+    ring, llm_calls = partner
+    caplog.set_level(logging.DEBUG)
+
+    response = analyze()
+
+    body = response.json()
+    assert response.status_code == 200
+    assert llm_calls == []                                    # healthy frame: never sent to Bedrock
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    assert body["video_metrics"]["resolution"] == "720x364"   # watermark band cropped (1280x648 -> 720 px)
+    assert body["snapshot"]["media_origin"] == "recording"
+    assert "image" not in body["snapshot"]
+    snap = api.get("/api/ring/snapshot")
+    assert snap.status_code == 200 and snap.content == ring.image
+    assert snap.headers["cache-control"] == "no-store"
+    assert snap.headers["x-media-timestamp"] == "1761210000000" and snap.headers["x-media-origin"] == "recording"
+    image_b64 = base64.b64encode(ring.image).decode()[:60]
+    assert image_b64 not in capsys.readouterr().out and image_b64 not in caplog.text   # never logged
+
+
+@pytest.mark.parametrize("frame, issue", [(blurry_frame, "sharpness"), (pink_frame, "chromatic")])
+def test_image_anomaly_reaches_bedrock_with_the_cropped_frame(partner, frame, issue):
+    ring, llm_calls = partner
+    ring.image = jpeg(frame())
+
+    body = analyze().json()
+
+    assert any(issue in i.lower() for i in body["video_metrics"]["issues"])
+    assert llm_calls and llm_calls[0]["image"]               # the frame goes to Bedrock only now
+    sent = cv2.imdecode(np.frombuffer(base64.b64decode(llm_calls[0]["image"]), np.uint8), cv2.IMREAD_COLOR)
+    assert sent.shape[:2] == (364, 720)                      # cropped and resized, not the raw Ring image
+
+
+def test_healthy_frame_is_not_sent_when_another_metric_triggers_bedrock(partner):
+    ring, llm_calls = partner
+    ring.status = {"online": True, "battery_status": {"percentage": 5}}
+    ring.capabilities = {**ring.capabilities, "battery_status": {"supported": True}}
+
+    analyze()
+
+    assert llm_calls and all(call["image"] is None for call in llm_calls)
+    assert "RING SNAPSHOT CHECKED LOCALLY" in llm_calls[0]["prompt"]
+
+
+@pytest.mark.parametrize("replies, expected_reason, posts", [
+    ([(416, None, "MEDIA_NOT_FOUND")], server.SNAPSHOT_REASONS["no_recent_media"], 1),
+    ([(422, None, "CORRUPT_RECORDING")], server.SNAPSHOT_REASONS["corrupt_recording"], 1),
+    ([(425, {"Retry-After": "20"}, "RECORDING_NOT_READY")], server.SNAPSHOT_REASONS["not_ready"], 1),
+    ([(503, None, "SERVER_BUSY")], None, 2),
+])
+def test_snapshot_without_image_explains_why(partner, replies, expected_reason, posts):
+    ring, llm_calls = partner
+    ring.snapshot_replies = replies
+
+    body = analyze().json()
+
+    finding = body["diagnostic_result"]["visual_findings"]
+    if expected_reason is None:
+        assert "device_offline_503" in finding[0]
+    else:
+        assert finding == [expected_reason]
+    assert ring.paths("POST").count(SNAPSHOT_POST) == posts and PRESIGNED_PATH not in ring.paths()
+    assert llm_calls == [] and "snapshot" not in body
+    assert api.get("/api/ring/snapshot").status_code == 404
+
+
+@pytest.mark.parametrize("first", [(425, None, "RECORDING_NOT_READY"), (503, None, "SERVER_BUSY"),
+                                   (500, None, None)])
+def test_transient_snapshot_reply_is_retried_then_succeeds(partner, sleeps, first):
+    ring, _ = partner
+    ring.snapshot_replies = [first, None]
+
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    assert ring.paths("POST").count(SNAPSHOT_POST) == 2 and sleeps == [1.0]
+
+
+def test_not_ready_waits_stay_within_the_budget(ring):
+    ring.snapshot_replies = [(425, None, "RECORDING_NOT_READY")]
+    waits = []
+
+    async def record(seconds):
+        waits.append(seconds)
+
+    result = asyncio.run(RingPartnerClient(sleep=record).download_snapshot(DEVICE_ID))
+    assert result["status"] == "not_ready" and sum(waits) <= 15.0 and waits == [1.0, 2.0, 4.0, 8.0]
+
+
+@pytest.mark.parametrize("image", [b"not an image at all", b"\xff\xd8" + b"\x00" * 64,
+                                   b"\xff\xd8" + b"\x00" * (10 * 1024 * 1024 + 1)],
+                         ids=["not-an-image", "jpeg-signature-only", "over-10-mb"])
+def test_corrupt_or_oversized_bytes_are_unreadable_not_errors(partner, image):
+    ring, llm_calls = partner
+    ring.image = image
+
+    response = analyze()
+
+    assert response.status_code == 200
+    assert response.json()["diagnostic_result"]["visual_findings"] == [server.SNAPSHOT_REASONS["unreadable"]]
+    assert llm_calls == []
+
+
+@pytest.mark.parametrize("configurations, capabilities, reason", [
+    ({"e2e_encryption": {"enabled": True}}, None, server.E2E_ENCRYPTED_REASON),
+    (None, {"image_enhancements": {"configurations": ["color_night_vision"]}}, server.PARTNER_NO_FRAME_REASON),
+])
+def test_no_snapshot_request_when_encrypted_or_unsupported(partner, configurations, capabilities, reason):
+    ring, _ = partner
+    if configurations:
+        ring.configurations = configurations
+    if capabilities:
+        ring.capabilities = capabilities
+
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [reason]
+    assert SNAPSHOT_POST not in ring.paths()
+
+
+@pytest.mark.parametrize("status, reason", [(401, "token_rejected"), (403, "token_rejected"),
+                                            (406, "blocked_406")])
+def test_credential_errors_on_snapshot_keep_their_reason(partner, status, reason):
+    ring, _ = partner
+    ring.snapshot_replies = [(status, None, None)]
+
+    response = analyze()
+
+    assert response.status_code == 502 and response.json()["detail"]["reason"] == reason
+    assert TOKEN not in response.text
+
+
+def test_simulator_analysis_never_requests_a_snapshot(ring):
+    frame = base64.b64encode(jpeg(sharp_frame())).decode()
+    response = api.post("/api/analyze", json={"source_mode": "twin", "camera_active": True, "frame_base64": frame,
+                                              "telemetry": {"scenario": "nominal"}})
+    assert response.status_code == 200 and ring.requests == []

@@ -1770,3 +1770,36 @@ test('T26: a supported setting reported off still reads off', () => {
   page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: context })})`);
   assert.ok(page.el('partner-settings').textContent.includes('HDR off'));
 });
+
+// ---------------------------------------------------------------------------
+// T27: the Partner monitor shows the Ring snapshot the diagnosis checked
+// ---------------------------------------------------------------------------
+
+test('T27: Partner monitor label no longer says retrieval is not integrated', () => {
+  const page = loadPage();
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI();");
+  assert.equal(page.el('monitor-source-label').textContent, 'Ring snapshot: none yet (run Analyze now)');
+});
+
+test('T27: Analyze now with a snapshot shows it with Ring time and origin', async () => {
+  const page = loadPage({ '/api/analyze': { status: 200, body: {
+    analysis_skipped: false,
+    snapshot: { media_timestamp: 1761210000000, media_origin: 'recording' },
+    diagnostic_result: { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'UNKNOWN', confidence_score: 0 },
+  } } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+
+  await page.run('runManualDiagnosis()');
+
+  assert.match(page.el('partner-snapshot').src, /^\/api\/ring\/snapshot\?t=\d+$/);
+  assert.equal(page.el('partner-snapshot').style.display, '');
+  assert.equal(page.el('monitor-source-label').textContent,
+    'Ring snapshot (latest recording) · 2025-10-23 09:00:00 UTC · recording');
+});
+
+test('T27: without a snapshot the monitor stays as it was', async () => {
+  const page = loadPage({ '/api/analyze': { status: 200, body: { analysis_skipped: true } } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI();");
+  await page.run('runManualDiagnosis()');
+  assert.notEqual(page.el('partner-snapshot').style.display, '');
+});

@@ -304,6 +304,10 @@
           <div class="standby-subtitle">PIR motion sensor and telemetry heartbeats active in background. Camera wakes on doorbell press, motion, or live view.</div>
         </div>
 
+        <!-- Partner mode: last Ring snapshot, served from server memory (never cached) -->
+        <img id="partner-snapshot" alt="Ring snapshot (latest recording)"
+             style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;">
+
         <!-- Active Canvas Stream -->
         <canvas id="video-canvas"></canvas>
         <video id="live-video-player" playsinline loop muted

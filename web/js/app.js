@@ -171,7 +171,7 @@ function applyPartnerModeUI() {
   const sourceLabel = document.getElementById('telemetry-source-label');
   if (sourceLabel) sourceLabel.textContent = 'Ring Partner API (device status only)';
   const monitorLabel = document.getElementById('monitor-source-label');
-  if (monitorLabel) monitorLabel.textContent = 'No Ring video: Partner image/stream retrieval not integrated';
+  if (monitorLabel) monitorLabel.textContent = 'Ring snapshot: none yet (run Analyze now)';
   const powerPill = document.getElementById('power-mode-status-pill');
   if (powerPill) powerPill.textContent = 'Power setup N/D (not reported by Ring)';
   const engineDesc = document.getElementById('engine-mode-desc');
@@ -528,6 +528,8 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
     }
 
     const data = await r.json();
+    // A Ring snapshot is shown whatever the verdict (it is the image the diagnosis checked).
+    if (partner && data.snapshot) showPartnerSnapshot(data.snapshot);
 
     // A heartbeat analysis that answers after its incident ended (recovery or Reset) is stale:
     // showing it would bring back a resolved alert. Event and manual analyses are not affected.
@@ -565,6 +567,21 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
     isAnalyzing = false;
     showAnalyzingIndicator(false);
   }
+}
+
+/** Partner monitor: the last Ring snapshot with Ring's media time and origin (recording or snapshot). */
+function showPartnerSnapshot(meta) {
+  const img = document.getElementById('partner-snapshot');
+  if (img) {
+    img.src = `/api/ring/snapshot?t=${Date.now()}`;
+    img.style.display = '';
+  }
+  const standby = document.getElementById('camera-standby-screen');
+  if (standby) standby.style.display = 'none';
+  const when = Number.isFinite(meta.media_timestamp)
+    ? new Date(meta.media_timestamp).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'time N/D';
+  const label = document.getElementById('monitor-source-label');
+  if (label) label.textContent = `Ring snapshot (latest recording) · ${when} · ${meta.media_origin || 'origin N/D'}`;
 }
 
 /** Nominal answer to an explicit "Analyze now" (pre-check, no Bedrock call). */
