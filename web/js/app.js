@@ -17,7 +17,8 @@ const state = {
   offlineAlertReads:   3,
   offlineStreak:       0,     // consecutive successful reads with online === false
   offlineAlertActive:  false,
-  partnerApiError:     null,  // last failed status read {status, message}; separate from device state
+  partnerApiError:     null,  // last failed status read {status, message, reason}; separate from device state
+  ringErrorReason:     null,  // /api/ring/status error_reason (missing_token, token_rejected, ...)
   pollPausedUntil:     0,     // epoch ms; set from Retry-After or the 429 backoff
   rateLimitStreak:     0,     // consecutive 429s without Retry-After (backoff exponent)
   offlineAlertMaxGapSeconds: 60,
@@ -104,6 +105,7 @@ async function checkServer() {
   }
   state.ringMode = status.mode;
   state.ringSource = status.source;
+  state.ringErrorReason = status.error_reason || null;
   if (status.monitoring) {
     state.pollIntervalSeconds = status.monitoring.poll_interval_seconds || state.pollIntervalSeconds;
     state.offlineAlertReads = status.monitoring.offline_alert_consecutive_reads || state.offlineAlertReads;
@@ -121,6 +123,7 @@ async function checkServer() {
   } else if (state.ringMode === 'ERROR') {
     statusEl.textContent = 'Ring credentials error';
     document.getElementById('server-dot').style.background = 'var(--ring-red)';
+    renderRingErrorHint(state.ringErrorReason);
   } else {
     statusEl.textContent = 'Digital Twin active';
   }

@@ -1,5 +1,6 @@
 """Tanda 8a: Partner mode hardening (required headers, error reasons, device settings, E2E, watermark).
 No test makes a network call outside 127.0.0.1."""
+import json
 import uuid
 
 import pytest
@@ -112,3 +113,82 @@ def test_429_without_retry_budget_raises_rate_limit_error():
             await client.list_devices()
 
     run_against({"/v1/devices": limited}, call, max_rate_limit_retries=0)
+
+
+# ---------------------------------------------------------------------------
+# T21: machine-readable error reasons
+# ---------------------------------------------------------------------------
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+import src.api.server as server  # noqa: E402
+from src.utils.ring_partner_client import (  # noqa: E402
+    RingForbiddenError,
+    RingNotFoundError,
+    RingPartnerError,
+    RingServiceUnavailableError,
+    RingTimeoutError,
+    RingUnauthorizedError,
+)
+from tests.test_partner_api_server import FakePartnerClient  # noqa: E402
+
+api = TestClient(server.app)
+
+
+@pytest.fixture
+def partner_mode(monkeypatch):
+    fake = FakePartnerClient()
+    monkeypatch.setattr(server, "ring_source", "partner")
+    monkeypatch.setattr(server, "ring_source_error", None)
+    monkeypatch.setattr(server, "partner_client", fake)
+    monkeypatch.setattr(server, "_partner_known_devices", {})
+    return fake
+
+
+@pytest.mark.parametrize("error, reason", [
+    (RingUnauthorizedError(f"HTTP 401 {FAKE_TOKEN}", status=401), "token_rejected"),
+    (RingForbiddenError("HTTP 403", status=403), "token_rejected"),
+    (RingBlockedError("HTTP 406", status=406), "blocked_406"),
+    (RingRateLimitError("HTTP 429", retry_after=2.0), "rate_limited"),
+    (RingServiceUnavailableError("HTTP 503"), "device_offline_503"),
+    (RingTimeoutError("timed out"), "network_error"),
+    (RingPartnerError("connection error (ClientConnectorError)"), "network_error"),
+    (RingNotFoundError("HTTP 404", status=404), "api_error"),
+])
+def test_status_and_telemetry_errors_carry_a_reason(partner_mode, error, reason):
+    partner_mode.error = error
+
+    status = api.get("/api/ring/status").json()
+    assert status["mode"] == "ERROR"
+    assert status["error_reason"] == reason and status["error"]["reason"] == reason
+    assert FAKE_TOKEN not in json.dumps(status)
+
+    telemetry = api.get("/api/ring/telemetry")
+    assert telemetry.json()["detail"]["reason"] == reason
+    assert FAKE_TOKEN not in telemetry.text
+
+
+def test_missing_token_reason(monkeypatch):
+    monkeypatch.setattr(server, "ring_source", "partner")
+    monkeypatch.setattr(server, "partner_client", None)
+    monkeypatch.setattr(server, "ring_source_error", "RING_PARTNER_ACCESS_TOKEN is not set")
+    status = api.get("/api/ring/status").json()
+    assert status["error_reason"] == "missing_token"
+    assert status["error"] == "RING_PARTNER_ACCESS_TOKEN is not set"   # header text source unchanged
+
+
+def test_live_partner_status_has_no_reason(partner_mode):
+    assert api.get("/api/ring/status").json()["error_reason"] is None
+
+
+def test_406_from_the_client_is_never_a_mode_change(partner_mode):
+    partner_mode.error = RingBlockedError(
+        "Ring blocked the request: missing headers or a datacenter IP (GET /v1/devices, HTTP 406)", status=406)
+    status = api.get("/api/ring/status").json()
+    assert status["source"] == "partner" and status["devices"] == []
+    assert "Ring blocked the request" in status["error"]["message"]
+
+
+def test_simulator_status_is_unchanged():
+    status = api.get("/api/ring/status").json()
+    assert status["source"] == "simulator" and "error_reason" not in status

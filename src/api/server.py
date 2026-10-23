@@ -48,12 +48,16 @@ from src.utils.telemetry_simulator import TelemetrySimulator
 from src.utils.ring_client import RingClient
 from src.utils.ring_partner_client import (
     TOKEN_ENV_VAR,
+    RingBlockedError,
+    RingForbiddenError,
+    RingNotConfiguredError,
     RingNotFoundError,
     RingPartnerClient,
     RingPartnerError,
     RingRateLimitError,
     RingServiceUnavailableError,
     RingTimeoutError,
+    RingUnauthorizedError,
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
 from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
@@ -134,6 +138,23 @@ def _redact(text: str) -> str:
     return text.replace(token, "[redacted]") if token else text
 
 
+def _partner_error_reason(exc: RingPartnerError) -> str:
+    """Machine-readable cause of a Partner failure, for the UI hint (never contains the token)."""
+    if isinstance(exc, RingNotConfiguredError):
+        return "missing_token"
+    if isinstance(exc, (RingUnauthorizedError, RingForbiddenError)):
+        return "token_rejected"
+    if isinstance(exc, RingBlockedError):
+        return "blocked_406"
+    if isinstance(exc, RingRateLimitError):
+        return "rate_limited"
+    if isinstance(exc, RingServiceUnavailableError):
+        return "device_offline_503"
+    if isinstance(exc, RingTimeoutError) or exc.status is None:
+        return "network_error"   # timeout or connection error: no HTTP answer from Ring
+    return "api_error"
+
+
 def _partner_http_error(exc: RingPartnerError) -> HTTPException:
     """Translates a Ring Partner API error into a safe HTTP error (no token, upstream status kept)."""
     if isinstance(exc, RingRateLimitError):
@@ -155,6 +176,7 @@ def _partner_http_error(exc: RingPartnerError) -> HTTPException:
         "source": "ring_partner_api",
         "error": type(exc).__name__,
         "upstream_status": exc.status,
+        "reason": _partner_error_reason(exc),
         "message": _redact(str(exc)),
     }
     if retry_after is not None:
@@ -489,8 +511,9 @@ async def get_ring_status():
     and discovered device information.
     """
     if ring_source_error:
+        reason = "missing_token" if ring_source == "partner" else "invalid_source"
         return {"source": ring_source, "mode": "ERROR", "is_live": False,
-                "error": ring_source_error, "device_count": 0, "devices": []}
+                "error": ring_source_error, "error_reason": reason, "device_count": 0, "devices": []}
     if ring_source == "partner":
         try:
             devices = await _discover_partner_devices(partner_client)
@@ -498,12 +521,13 @@ async def get_ring_status():
             # Report the failure as the state; never substitute simulated devices.
             error = _partner_http_error(exc).detail
             return {"source": ring_source, "mode": "ERROR", "is_live": False,
-                    "error": error, "device_count": 0, "devices": []}
+                    "error": error, "error_reason": error["reason"], "device_count": 0, "devices": []}
         return {
             "source": ring_source,
             "mode": "LIVE",
             "is_live": True,
             "error": None,
+            "error_reason": None,
             "device_count": len(devices),
             "devices": devices,
             "features": {"telemetry": True, "snapshot": False, "whep": False, "webhooks": False},

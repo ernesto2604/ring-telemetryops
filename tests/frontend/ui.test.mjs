@@ -1623,3 +1623,52 @@ test('T16: Technical details show a root-cause domain replaced by the pre-check'
   page.run(`renderResult(${JSON.stringify(NETWORK_REPORT.diagnostic_result)}, ${JSON.stringify(NETWORK_REPORT)})`);
   assert.equal(page.el('tech-domain').textContent, 'NETWORK');
 });
+
+// ---------------------------------------------------------------------------
+// T21: plain-language Ring error reasons under the header (never the token)
+// ---------------------------------------------------------------------------
+
+const RING_REASON_HINTS = {
+  missing_token: 'No Ring token configured.',
+  token_rejected: 'Ring rejected the token. Playground tokens expire after 30 minutes: '
+    + 'generate a new one and restart the server.',
+  blocked_406: 'Ring blocked the request: missing headers or a datacenter IP.',
+  rate_limited: 'Ring rate limit reached: requests resume after the wait Ring asked for.',
+  device_offline_503: 'Ring answered 503: the device is unreachable or Ring is busy.',
+  network_error: 'Ring could not be reached (timeout or network error).',
+};
+
+for (const [reason, hint] of Object.entries(RING_REASON_HINTS)) {
+  test(`T21: /api/ring/status error_reason ${reason} keeps the header and shows its hint`, async () => {
+    const page = loadPage({
+      '/api/ring/status': { status: 200, body: { mode: 'ERROR', source: 'partner', error_reason: reason } },
+    }, { simulatorReady: false });
+
+    await page.run('checkServer()');
+
+    assert.equal(page.el('server-status').textContent, 'Ring credentials error');
+    assert.equal(page.el('partner-error-hint').textContent, hint);
+    assert.equal(page.el('partner-error-hint').style.display, '');
+  });
+}
+
+test('T21: a failed telemetry read shows the hint for its reason; a good read clears it', async () => {
+  let reply = { status: 502, body: { detail: { message: 'HTTP 401', reason: 'token_rejected' } } };
+  const page = loadPage({ '/api/ring/telemetry': () => reply });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+
+  await page.run('refreshTelemetry().catch(() => {})');
+  assert.equal(page.el('partner-error-hint').textContent, RING_REASON_HINTS.token_rejected);
+
+  reply = { status: 200, body: NULL_PARTNER_TELEMETRY };
+  await page.run('refreshTelemetry()');
+  assert.equal(page.el('partner-error-hint').style.display, 'none');
+});
+
+test('T21: simulator mode never shows a Ring error hint', async () => {
+  const page = loadPage({ '/api/ring/status': { status: 200, body: { mode: 'MOCK', source: 'simulator' } } },
+    { simulatorReady: false });
+  await page.run('checkServer()');
+  assert.notEqual(page.el('partner-error-hint').style.display, '');
+  assert.equal(page.el('server-status').textContent, 'Digital Twin active');
+});

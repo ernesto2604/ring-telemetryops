@@ -263,8 +263,8 @@ async function refreshTelemetry() {
         if (isPartnerSource()) {
           // An API failure says nothing about the device: no telemetry is shown (not "offline").
           state.telemetry = null;
-          const message = await responseErrorMessage(liveResponse);
-          state.partnerApiError = { status: liveResponse.status, message };
+          const { message, reason } = await responseErrorDetail(liveResponse);
+          state.partnerApiError = { status: liveResponse.status, message, reason };
           // Retry-After (or 429 backoff): the poll timer skips requests until it has elapsed.
           const pause = pollPauseSeconds(
             liveResponse.status, liveResponse.headers && liveResponse.headers.get('Retry-After'));
@@ -321,16 +321,39 @@ async function refreshTelemetry() {
 }
 
 /** Readable error text from a failed API response (FastAPI `detail` may be a string or an object). */
-async function responseErrorMessage(response) {
+async function responseErrorDetail(response) {
   try {
     const body = await response.json();
     const detail = body && body.detail;
-    if (typeof detail === 'string') return detail;
-    if (detail && detail.message) return detail.message;
+    if (typeof detail === 'string') return { message: detail, reason: null };
+    if (detail && detail.message) return { message: detail.message, reason: detail.reason || null };
   } catch {
     // Non-JSON error body: fall back to the HTTP status.
   }
-  return `HTTP ${response.status}`;
+  return { message: `HTTP ${response.status}`, reason: null };
+}
+
+async function responseErrorMessage(response) {
+  return (await responseErrorDetail(response)).message;
+}
+
+// One plain-language line per Partner error reason (from the server; the token is never shown).
+const RING_ERROR_HINTS = {
+  missing_token: 'No Ring token configured.',
+  token_rejected: 'Ring rejected the token. Playground tokens expire after 30 minutes: '
+    + 'generate a new one and restart the server.',
+  blocked_406: 'Ring blocked the request: missing headers or a datacenter IP.',
+  rate_limited: 'Ring rate limit reached: requests resume after the wait Ring asked for.',
+  device_offline_503: 'Ring answered 503: the device is unreachable or Ring is busy.',
+  network_error: 'Ring could not be reached (timeout or network error).',
+};
+
+function renderRingErrorHint(reason) {
+  const el = document.getElementById('partner-error-hint');
+  if (!el) return;
+  const hint = RING_ERROR_HINTS[reason] || '';
+  el.textContent = hint;
+  el.style.display = hint ? '' : 'none';
 }
 
 function updateMetricCards(t) {
@@ -450,6 +473,7 @@ function updatePartnerBadges(t) {
     apiErrEl.textContent = err ? `⚠️ Ring API error (HTTP ${err.status})` : '';
     apiErrEl.title = err ? err.message : '';
   }
+  renderRingErrorHint(state.partnerApiError ? state.partnerApiError.reason : state.ringErrorReason);
 
   const rssi = measuredNumber(dh.rssi);
   const battery = measuredNumber(dh.battery_percentage);
