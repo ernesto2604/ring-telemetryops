@@ -270,6 +270,19 @@ RING_PARTNER_ACCESS_TOKEN=
 RING_PARTNER_DEVICE_ID=
 ```
 
+**Order of precedence** (read once, when the server or the CLI starts): a variable set in the shell
+wins over `.env`; `.env` wins over the defaults (`RING_DATA_SOURCE` defaults to `simulator`);
+`PYTHON_DOTENV_DISABLED=1` skips `.env` entirely. Restart the server after editing `.env`. At start
+the server prints where the source came from, for example
+`[Ring] Data source: partner (from .env)` or
+`[Ring] Data source: simulator (from shell environment variable (overrides .env))`.
+PowerShell keeps `$env:` variables for the whole window, so a `$env:RING_DATA_SOURCE` or
+`$env:PYTHON_DOTENV_DISABLED` set by an earlier command (such as the demo commands below) still
+overrides `.env`; clear them before using the `.env` value:
+```powershell
+Remove-Item Env:RING_DATA_SOURCE, Env:PYTHON_DOTENV_DISABLED -ErrorAction SilentlyContinue
+```
+
 `.env.example` documents the Partner polling settings (`RING_PARTNER_POLL_SECONDS`,
 `RING_PARTNER_OFFLINE_ALERT_READS`, `RING_PARTNER_OFFLINE_ALERT_MAX_GAP_SECONDS`); they are
 prototype defaults, not Ring recommendations.
@@ -300,7 +313,9 @@ they never mark the device offline and never fall back to simulated data.
 ### Option A: Launch Interactive Digital Twin (Web UI)
 
 Run the FastAPI local server in simulator mode. Variables set in the shell take precedence over
-`.env` (python-dotenv never overrides them).
+`.env` (python-dotenv never overrides them), and they stay set in that PowerShell window: run the
+`Remove-Item` line from the configuration section before starting with the `.env` values (for example
+`RING_DATA_SOURCE=partner`).
 
 **Offline demo (no Ring, no Bedrock, no `.env`)**, Windows PowerShell from the repository root.
 `PYTHON_DOTENV_DISABLED` skips `.env`; the `AWS_*` settings leave boto3 without credentials, so

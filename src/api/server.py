@@ -37,6 +37,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
+# Read before load_dotenv: a shell variable wins over .env, and the startup line says which one applied.
+_SHELL_RING_SOURCE = os.environ.get("RING_DATA_SOURCE")
 load_dotenv(ROOT / ".env")
 
 import math
@@ -100,6 +102,22 @@ def _load_ring_source():
 
 
 ring_source, ring_client, partner_client, ring_source_error = _load_ring_source()
+
+
+def _ring_source_origin() -> str:
+    """Where RING_DATA_SOURCE came from: the shell, .env or the default (simulator)."""
+    if _SHELL_RING_SOURCE is not None:
+        origin = "shell environment variable (overrides .env)"
+    elif os.getenv(RING_SOURCE_ENV_VAR):
+        origin = ".env"
+    else:
+        origin = "default"
+    if os.getenv("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:   # python-dotenv's rule
+        origin += "; .env skipped because PYTHON_DOTENV_DISABLED is set"
+    return origin
+
+
+print(f"[Ring] Data source: {ring_source} (from {_ring_source_origin()})", flush=True)
 
 
 def _ring_mode() -> str:
