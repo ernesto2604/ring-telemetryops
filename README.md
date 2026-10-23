@@ -74,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one; live video (WHEP / RTSPS), video clips and webhooks are **not implemented**, and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one; live video (WHEP / RTSPS) and video clips are **not implemented** (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -541,7 +541,7 @@ Partner mode only; the simulator is unchanged.
 * **What reaches Bedrock:** a Ring image is sent only when the pre-check finds an image problem (blur,
   tint, banding, brightness). A healthy frame is reported as "image OK" and never leaves the server, even
   when another metric (for example a low battery) calls Bedrock.
-* **Event History (polling, not webhooks):** each Partner poll cycle reads
+* **Event History (polling):** each Partner poll cycle reads
   `GET /v1/history/devices/{id}/events` at most once (types from `RING_PARTNER_EVENT_TYPES`, default
   `ding,motion,on_demand`; up to 2 pages; `Retry-After` honoured) and lists the last 20 events under
   "Ring events". An empty list is normal: Ring returns only events after the user's consent. A new event
@@ -552,7 +552,7 @@ Partner mode only; the simulator is unchanged.
   network and power `not_available`, because Ring does not share Wi-Fi or power data with partner apps).
   `diagnostic_status` is unchanged; the customer view says "Partial check" or "Not enough data" and the
   mitigation is written for the customer.
-* **Not implemented yet:** live video (WHEP / RTSPS), video clips and webhooks.
+* **Not implemented yet:** live video (WHEP / RTSPS) and video clips.
 
 #### Alignment with Ring's Computer Vision Guidelines
 
@@ -564,6 +564,48 @@ Partner mode only; the simulator is unchanged.
   and customer-text rules, one corrective retry) with a deterministic fallback when they still fail.
 * **Privacy:** Ring images are processed in memory, never stored or logged, and sent to Bedrock only for
   an image anomaly; unreadable (encrypted) media is an expected outcome, not retried.
+
+### Webhooks (implemented and tested with signed fixtures; not verified against live Ring webhooks, which need a public HTTPS URL and a registered app)
+
+* **Endpoint:** `POST /webhooks/ring`, active only with `RING_DATA_SOURCE=partner` (404 otherwise).
+* **Signature:** `X-Signature: sha256=<hex>` is checked with HMAC-SHA256 over the raw body bytes and the
+  app's signing key in `RING_PARTNER_HMAC_KEY` (constant-time compare), before the JSON is parsed. A missing
+  or wrong signature is 401 and nothing is processed. **Without the key the endpoint answers 503** and never
+  accepts unsigned messages. Bodies above `RING_WEBHOOK_MAX_BODY_BYTES` (default 64 KB) are 413; malformed
+  JSON with a valid signature is 400.
+* **Deduplication:** Ring may deliver the same message again; a repeated `meta.request_id` (last 1000 kept
+  in memory) answers 200 without new work. An event that arrives both as a webhook and through Event History
+  (same device, type and start within 10 s) is analyzed once.
+* **Fast response:** Ring expects a 2xx within 5 s, so the receiver answers 200 at once and analyzes
+  `motion_detected` and `button_press` afterwards (FastAPI `BackgroundTasks`), exactly like a new Event
+  History event: the snapshot at `data.attributes.timestamp`, silence when healthy, and a report titled
+  "Issue during Motion Detection / Doorbell Press" (delivered to the UI by the next events poll) when there
+  is a problem. `device_online`, `device_offline`, `device_added` and `device_removed` only update in-memory
+  state; unknown types answer 200 and are ignored.
+* **Sub-type filter:** `RING_WEBHOOK_SKIP_SUBTYPES` (comma-separated, empty by default) skips
+  `motion_detected` sub-types such as `vehicle` (Stage 0 of Ring's vision funnel). A skipped event is not
+  analyzed when Event History lists it either.
+* **Local demo:** `python -m tools.send_test_webhook --type motion_detected|button_press|device_offline`
+  signs a v1.1 payload with the key from the environment or `.env` (never printed) and posts it to
+  `http://127.0.0.1:8000/webhooks/ring` (`--timestamp-ms`; default: the newest listed event, else now).
+
+### Funnel metrics
+
+`GET /api/metrics` returns counters since the server started: analyses, pre-check nominal (the frame
+stays on the server), pre-check anomaly, insufficient data, Bedrock calls and retries (a call that failed
+before the fallback counts), local fallbacks, snapshots OK and failed by cause, new events (Event
+History or webhooks) and feedback votes, plus median and p95 latency per engine (`bedrock`,
+`local_fallback`, `precheck`) over the last 100 analyses. They live in memory only and reset on restart;
+no device IDs, images or free text. The engine panel shows them as "Funnel (this session)".
+
+### User feedback
+
+Each report carries a server-generated `report_id`. Under the mitigation the UI asks "Was this helpful?"
+(👍 / 👎, with an optional comment of up to 200 characters after 👎); one vote per report.
+`POST /api/feedback` appends one JSON line to `data/feedback/feedback.jsonl` with the time, `report_id`,
+engine, severity, domain, rating and comment: no image, device ID or IP address. `data/feedback/` is
+ignored by git. Only the last 100 reports accept votes, at most 30 votes per minute; if the file cannot
+be written the vote is answered with 503 and can be sent again.
 
 ### Known limitations
 
@@ -622,6 +664,7 @@ ring-telemetryops/
 │   │   ├── concierge.py                      # Autonomous Bedrock LLM Orchestrator
 │   │   └── knowledge_retriever.py            # Multimodal RAG Engine
 │   ├── api/
+│   │   ├── funnel.py                         # In-memory funnel counters (GET /api/metrics)
 │   │   └── server.py                         # FastAPI Web Server & REST endpoints
 │   ├── utils/
 │   │   ├── ring_client.py                    # Digital Twin adapter (simulated data only)
@@ -645,6 +688,8 @@ ring-telemetryops/
 │   ├── conftest.py                           # Blanks Ring/AWS credentials, blocks real boto3 clients
 │   ├── test_*.py                             # pytest suites (API, agent, KB, Partner client, B1–B5)
 │   └── frontend/ui.test.mjs                  # Node tests for the web UI (fake DOM)
+├── tools/
+│   └── send_test_webhook.py                  # Sends one signed test webhook to the local server
 ├── FRICTION_LOG.md                           # Hackathon Developer Experience Friction Log
 ├── LICENSE                                   # MIT License
 ├── README.md                                 # Technical documentation
