@@ -41,6 +41,7 @@ import json
 import logging
 import math
 import os
+import re
 import socket
 import time
 import uuid
@@ -385,6 +386,9 @@ def build_device_context(
 SNAPSHOT_WINDOW_MS = 24 * 3600 * 1000      # Ring's maximum latest_in_range window
 SNAPSHOT_WAIT_BUDGET_SECONDS = 15.0        # total wait for a recording that is not ready (Analyze now)
 SNAPSHOT_MAX_BYTES = 10 * 1024 * 1024      # design limit for one image, not a Ring value
+SNAPSHOT_ERROR_MAX_BYTES = 4096            # JSON error body read from a failed media download
+# Undocumented 422 seen live on the pre-signed GET: "No valid Greco key available for decryption".
+UNDECRYPTABLE_CODES = ("GRECO_NO_VALID_KEY",)
 
 
 def _snapshot_result(status: str) -> Dict[str, Any]:
@@ -401,6 +405,23 @@ def _image_type(data: bytes) -> Optional[str]:
         return None
     decoded = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     return content_type if decoded is not None else None
+
+
+def classify_media_error(body: Any) -> str:
+    """
+    Snapshot status for a 422 media reply from its JSON:API error body (`status`, `code`, `detail`):
+    "media_undecryptable" for a decryption-key error, else "corrupt_recording". Never raises.
+    """
+    try:
+        errors = json.loads(body).get("errors") if body else None
+        error = errors[0] if isinstance(errors, list) and errors and isinstance(errors[0], dict) else {}
+    except (ValueError, TypeError, AttributeError):
+        error = {}
+    code = error.get("code") if isinstance(error.get("code"), str) else ""
+    detail = error.get("detail").lower() if isinstance(error.get("detail"), str) else ""
+    if code in UNDECRYPTABLE_CODES or re.search(r"decrypt|\bkeys?\b", detail):
+        return "media_undecryptable"
+    return "corrupt_recording"
 
 
 def first_component_id(capability_attrs: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -608,8 +629,9 @@ class RingPartnerClient:
         retried once; 422 never.
 
         Returns {"status", "image", "content_type", "media_timestamp", "media_origin"}; `status` is
-        "ok", "no_recent_media" (416), "not_ready", "corrupt_recording" (422) or "unreadable" (not a
-        decodable JPEG/PNG within SNAPSHOT_MAX_BYTES). The image stays in memory: it is never logged.
+        "ok", "no_recent_media" (416), "not_ready", "media_undecryptable" (422 decryption-key error,
+        on the POST or the pre-signed GET), "corrupt_recording" (other 422) or "unreadable_image" (not
+        a decodable JPEG/PNG within SNAPSHOT_MAX_BYTES). The image stays in memory: it is never logged.
         Other HTTP errors raise the typed errors of `_get_json`.
         """
         if not self._token:
@@ -647,7 +669,7 @@ class RingPartnerClient:
                 if status == 303 and location:
                     break
                 if status == 422:
-                    return _snapshot_result("corrupt_recording")
+                    return _snapshot_result(classify_media_error(text))
                 if status == 425 or (status == 416 and wait_for_recording):
                     attempt += 1
                     delay = retry_after if retry_after is not None else TRANSIENT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
@@ -672,19 +694,23 @@ class RingPartnerClient:
     async def _fetch_presigned(self, session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
         """GET of the pre-signed media URL: no Authorization header (the token never goes there)."""
         if urlsplit(url).scheme not in ("http", "https"):
-            return _snapshot_result("unreadable")
+            return _snapshot_result("unreadable_image")
         try:
             async with session.get(url, headers={"User-Agent": USER_AGENT}, allow_redirects=False) as response:
                 if response.status != 200:
-                    return _snapshot_result("unreadable")
+                    # Small JSON:API error body only; the URL itself is never logged or returned.
+                    body = (await response.content.read(SNAPSHOT_ERROR_MAX_BYTES)).decode("utf-8", "replace")
+                    if response.status == 422:
+                        return _snapshot_result(classify_media_error(body))
+                    return _snapshot_result("no_recent_media" if response.status == 416 else "unreadable_image")
                 declared = response.headers.get("Content-Length", "")
                 if declared.isdigit() and int(declared) > SNAPSHOT_MAX_BYTES:
-                    return _snapshot_result("unreadable")
+                    return _snapshot_result("unreadable_image")
                 data = bytearray()
                 async for chunk in response.content.iter_chunked(65536):
                     data.extend(chunk)
                     if len(data) > SNAPSHOT_MAX_BYTES:
-                        return _snapshot_result("unreadable")
+                        return _snapshot_result("unreadable_image")
                 media_timestamp = response.headers.get("X-Media-Timestamp", "").strip()
                 media_origin = response.headers.get("X-Media-Origin")
         except asyncio.TimeoutError:
@@ -695,7 +721,7 @@ class RingPartnerClient:
 
         content_type = _image_type(bytes(data))
         if content_type is None:
-            return _snapshot_result("unreadable")
+            return _snapshot_result("unreadable_image")
         return {**_snapshot_result("ok"), "image": bytes(data), "content_type": content_type,
                 "media_timestamp": int(media_timestamp) if media_timestamp.isdigit() else None,
                 "media_origin": media_origin if isinstance(media_origin, str) else None}

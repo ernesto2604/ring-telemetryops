@@ -96,8 +96,9 @@ E2E_ENCRYPTED_REASON = (
 SNAPSHOT_REASONS = {
     "no_recent_media": "No recent recording available from Ring: snapshots come from existing recordings",
     "not_ready": "Ring's recording was not ready in time: no image was analyzed",
-    "corrupt_recording": "Ring reported the recording as corrupt: no image was analyzed",
-    "unreadable": "Ring returned an image that could not be read: no image was analyzed",
+    "corrupt_recording": "Ring reported a damaged recording, so the image could not be checked.",
+    "media_undecryptable": "Ring could not decrypt the latest recording, so the image could not be checked.",
+    "unreadable_image": "Ring returned an image this app could not read, so it could not be checked.",
 }
 # `_source` of telemetry sent in the request body: set by the server, never taken from the caller.
 CLIENT_TELEMETRY_SOURCE = "client_supplied"
@@ -762,6 +763,14 @@ PARTNER_NO_IMAGE_MITIGATION = (
     "Ring doesn't share Wi-Fi or battery data with this app, and no recent recording was available to "
     "check the image. Check Device Health in the Ring app."
 )
+PARTNER_DEVICE_HEALTH_HINT = (
+    "Ring doesn't share Wi-Fi or battery data with this app: check them in the Ring app under Device Health."
+)
+# Image-detail text -> mitigation, so the mitigation names the same cause as the visual finding.
+PARTNER_CAUSE_MITIGATIONS = {
+    SNAPSHOT_REASONS[cause]: f"{SNAPSHOT_REASONS[cause]} {PARTNER_DEVICE_HEALTH_HINT}"
+    for cause in ("media_undecryptable", "corrupt_recording", "unreadable_image")
+}
 
 
 def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -788,7 +797,8 @@ def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, 
     diag = result.get("diagnostic_result") or {}
     if diag.get("diagnostic_status") == "INSUFFICIENT_DATA":
         diag["recommended_mitigation"] = (
-            PARTNER_IMAGE_OK_MITIGATION if image["status"] == "ok" else PARTNER_NO_IMAGE_MITIGATION)
+            PARTNER_IMAGE_OK_MITIGATION if image["status"] == "ok"
+            else PARTNER_CAUSE_MITIGATIONS.get(image["detail"], PARTNER_NO_IMAGE_MITIGATION))
     return result
 
 

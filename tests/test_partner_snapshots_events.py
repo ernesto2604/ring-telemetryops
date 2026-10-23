@@ -258,7 +258,7 @@ def test_corrupt_or_oversized_bytes_are_unreadable_not_errors(partner, image):
     response = analyze()
 
     assert response.status_code == 200
-    assert response.json()["diagnostic_result"]["visual_findings"] == [server.SNAPSHOT_REASONS["unreadable"]]
+    assert response.json()["diagnostic_result"]["visual_findings"] == [server.SNAPSHOT_REASONS["unreadable_image"]]
     assert llm_calls == []
 
 
@@ -578,3 +578,114 @@ def test_analyze_now_does_not_try_other_events_after_a_credential_or_ring_error(
     assert len(snapshot_bodies(with_events)) == 1
     if status == 401:
         assert response.json()["detail"]["reason"] == "token_rejected"
+
+
+# ---------------------------------------------------------------------------
+# T36 Snapshot failure causes explained separately
+# ---------------------------------------------------------------------------
+
+from src.utils.ring_partner_client import classify_media_error  # noqa: E402
+from tests.fake_ring_server import greco_no_valid_key  # noqa: E402
+
+UNDECRYPTABLE_TEXT = ("Ring could not decrypt the latest recording, so the image could not be checked. "
+                      "Ring doesn't share Wi-Fi or battery data with this app: check them in the Ring app "
+                      "under Device Health.")
+
+
+@pytest.mark.parametrize("body, expected", [
+    (json.dumps(greco_no_valid_key()[1]), "media_undecryptable"),
+    ('{"errors": [{"status": "422", "detail": "Decryption failed"}]}', "media_undecryptable"),
+    ('{"errors": [{"status": "422", "detail": "No key for this recording"}]}', "media_undecryptable"),
+    ('{"errors": [{"status": "422", "code": "CORRUPT_RECORDING"}]}', "corrupt_recording"),
+    ('{"errors": [{"status": "422", "detail": "Bad keyframe"}]}', "corrupt_recording"),
+    ("<html>not json</html>", "corrupt_recording"),
+    ("[1, 2]", "corrupt_recording"),
+    ('{"errors": "x"}', "corrupt_recording"),
+    ("", "corrupt_recording"),
+    (None, "corrupt_recording"),
+])
+def test_422_error_body_is_classified_without_raising(body, expected):
+    assert classify_media_error(body) == expected
+
+
+@pytest.mark.parametrize("presigned, post, expected", [
+    (greco_no_valid_key(), None, "media_undecryptable"),
+    ((422, {"errors": [{"status": "422", "code": "CORRUPT_RECORDING"}]}), None, "corrupt_recording"),
+    ((422, "not json"), None, "corrupt_recording"),
+    ((416, {"errors": [{"status": "416"}]}), None, "no_recent_media"),
+    ((500, {"errors": [{"status": "500"}]}), None, "unreadable_image"),
+    (None, (422, None, "CORRUPT_RECORDING"), "corrupt_recording"),
+    (None, (422, None, "GRECO_NO_VALID_KEY"), "media_undecryptable"),
+], ids=["get-greco", "get-corrupt", "get-not-json", "get-416", "get-500", "post-corrupt", "post-greco"])
+def test_client_snapshot_failure_causes(ring, presigned, post, expected):
+    if presigned:
+        ring.presigned_replies = [presigned]
+    if post:
+        ring.snapshot_replies = [post]
+
+    result = asyncio.run(RingPartnerClient().download_snapshot(DEVICE_ID))
+
+    assert result["status"] == expected and result["image"] is None
+
+
+def test_live_greco_error_on_the_presigned_get_is_explained(partner, capsys, caplog):
+    ring, llm_calls = partner
+    caplog.set_level(logging.DEBUG)
+    ring.presigned_replies = [greco_no_valid_key()]
+
+    response = analyze()
+
+    body = response.json()
+    assert response.status_code == 200 and llm_calls == []
+    diag = body["diagnostic_result"]
+    assert diag["visual_findings"] == [server.SNAPSHOT_REASONS["media_undecryptable"]]
+    assert diag["diagnostic_status"] == "INSUFFICIENT_DATA"
+    assert diag["recommended_mitigation"] == UNDECRYPTABLE_TEXT
+    assert domains_by_name(body)["image"]["detail"] == server.SNAPSHOT_REASONS["media_undecryptable"]
+    assert "could not be read" not in response.text and "no recent recording" not in response.text
+    app_logs = "\n".join(r.getMessage() for r in caplog.records if r.name != "aiohttp.access")  # not the fake's
+    for text in (response.text, capsys.readouterr().out, app_logs):
+        assert PRESIGNED_PATH not in text                       # the pre-signed URL is never shown or logged
+
+
+@pytest.mark.parametrize("setup, cause", [
+    (lambda r: setattr(r, "snapshot_replies", [(422, None, "CORRUPT_RECORDING")]), "corrupt_recording"),
+    (lambda r: setattr(r, "image", b"not an image at all"), "unreadable_image"),
+])
+def test_each_cause_has_a_matching_finding_and_mitigation(partner, setup, cause):
+    ring, _ = partner
+    setup(ring)
+
+    diag = analyze().json()["diagnostic_result"]
+
+    reason = server.SNAPSHOT_REASONS[cause]
+    assert diag["visual_findings"] == [reason]
+    assert diag["recommended_mitigation"] == f"{reason} {server.PARTNER_DEVICE_HEALTH_HINT}"
+
+
+def test_customer_texts_per_cause():
+    assert server.SNAPSHOT_REASONS["corrupt_recording"] == (
+        "Ring reported a damaged recording, so the image could not be checked.")
+    assert server.SNAPSHOT_REASONS["unreadable_image"] == (
+        "Ring returned an image this app could not read, so it could not be checked.")
+    assert server.SNAPSHOT_REASONS["no_recent_media"] == (
+        "No recent recording available from Ring: snapshots come from existing recordings")
+
+
+def test_newest_event_undecryptable_then_next_event_works(with_events):
+    with_events.presigned_replies = [greco_no_valid_key(), None]
+
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    assert [b.get("timestamp") for b in snapshot_bodies(with_events)] == EVENT_STARTS[:2]
+
+
+def test_every_recording_undecryptable_names_that_cause(with_events):
+    with_events.presigned_replies = [greco_no_valid_key()]
+
+    diag = analyze().json()["diagnostic_result"]
+
+    assert [b["type"] for b in snapshot_bodies(with_events)] == ["at_timestamp"] * 3 + ["latest_in_range"]
+    assert diag["visual_findings"] == [server.SNAPSHOT_REASONS["media_undecryptable"]]
+    assert diag["recommended_mitigation"] == UNDECRYPTABLE_TEXT

@@ -5,7 +5,7 @@ thread, so it serves both asyncio tests and FastAPI's synchronous TestClient. No
 It implements, with fictitious data shaped like the documented JSON:API payloads:
   GET  /v1/devices, /v1/devices/{id}?include=..., /v1/devices/{id}/{status|capabilities}
   POST /v1/devices/{id}/media/image/download   -> scripted replies, default 303 + Location
-  GET  /media/presigned/{key}                  -> the image (no Authorization expected)
+  GET  /media/presigned/{key}                  -> scripted replies, default the image (no Authorization expected)
   GET  /v1/history/devices/{id}/events         -> event pages linked by links.next
 
 Every request is recorded in `requests` (method, path, query, headers, json body).
@@ -79,6 +79,8 @@ class FakeRing:
         # POST replies in order: (status, headers, code); the last one repeats. None -> 303 + Location.
         self.snapshot_replies: List[Optional[tuple]] = [None]
         self.image: bytes = jpeg(sharp_frame())
+        # Pre-signed GET replies in order: (status, json_body); the last one repeats. None -> the image.
+        self.presigned_replies: List[Optional[tuple]] = [None]
         self.image_headers: Dict[str, str] = {"X-Media-Timestamp": "1761210000000", "X-Media-Origin": "recording"}
         # Event pages by page key ("" = first page); each is a list of history-events items.
         self.event_pages: Dict[str, List[Dict[str, Any]]] = {"": []}
@@ -168,6 +170,10 @@ class FakeRing:
         return jsonapi_error(status, code=code, headers=headers)
 
     async def _presigned(self, _request):
+        reply = self.presigned_replies.pop(0) if len(self.presigned_replies) > 1 else self.presigned_replies[0]
+        if reply is not None:
+            status, body = reply
+            return web.json_response(body, status=status)
         return web.Response(body=self.image, content_type="image/jpeg", headers=self.image_headers)
 
     async def _events(self, request):
@@ -179,6 +185,13 @@ class FakeRing:
         if key in self.event_links:
             document["links"] = {"next": f"{request.path}?page[key]={self.event_links[key]}"}
         return web.json_response(document)
+
+
+def greco_no_valid_key() -> tuple:
+    """Pre-signed GET reply seen live (fictitious id/timestamp): 422 with an undocumented error code."""
+    return 422, {"errors": [{"id": "fake-error-1", "status": "422", "code": "GRECO_NO_VALID_KEY",
+                             "detail": "No valid Greco key available for decryption",
+                             "meta": {"timestamp": "2026-10-23T10:00:00Z"}}]}
 
 
 def history_event(event_id: str, event_type: str, start_ms: int, reviewed: bool = False) -> Dict[str, Any]:
