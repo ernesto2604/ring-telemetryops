@@ -1939,3 +1939,38 @@ test('T33: without a snapshot the overlays stay visible', async () => {
     assert.notEqual(page.el(id).style.display, 'none', id);
   }
 });
+
+// ---------------------------------------------------------------------------
+// T38: funnel line in the engine panel
+// ---------------------------------------------------------------------------
+
+const METRICS = {
+  analyses_total: 12, precheck_nominal: 7, precheck_anomaly: 5, bedrock_calls: 3, bedrock_retries: 0,
+  local_fallbacks: 0, insufficient_data: 0, feedback_up: 2, feedback_down: 0,
+};
+
+test('T38: the engine panel shows the funnel line from /api/metrics', async () => {
+  const page = loadPage({ '/api/metrics': { status: 200, body: METRICS } });
+  await page.run('loadEngineStatus()');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(page.el('funnel-line').textContent,
+    'Funnel (this session): Analyses 12 · healthy frames kept on server 7 · Bedrock calls 3 · fallbacks 0 · helpful 2 / not helpful 0');
+});
+
+test('T38: the funnel line refreshes after each analysis', async () => {
+  let calls = 0;
+  const page = loadPage({
+    '/api/analyze': { status: 200, body: { analysis_skipped: true } },
+    '/api/metrics': () => ({ status: 200, body: { ...METRICS, analyses_total: ++calls } }),
+  });
+  await page.run('runManualDiagnosis()');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(page.el('funnel-line').textContent, /^Funnel \(this session\): Analyses 1 ·/);
+});
+
+test('T38: a failed metrics request keeps the previous line', async () => {
+  const page = loadPage({ '/api/metrics': { status: 500, body: {} } });
+  page.el('funnel-line').textContent = 'Funnel (this session): —';
+  await page.run('loadFunnelMetrics()');
+  assert.equal(page.el('funnel-line').textContent, 'Funnel (this session): —');
+});

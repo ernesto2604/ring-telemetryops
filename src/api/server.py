@@ -20,6 +20,7 @@ Endpoints:
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
   POST /api/upload-video        → Uploads an MP4 video stream
   GET  /api/samples             → Lists available sample video clips
+  GET  /api/metrics             → Analysis funnel counters since server start (in memory, no IDs or images)
 """
 
 import base64
@@ -71,6 +72,7 @@ from src.utils.partner_telemetry import partner_device_to_telemetry
 from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
 from src.video_pipeline.analyzer import STREAM_ISSUE_PREFIXES
 from src.config import severity
+from src.api.funnel import funnel
 
 logger = logging.getLogger(__name__)
 
@@ -660,6 +662,7 @@ async def _download_snapshot(telemetry: Dict[str, Any], **kwargs: Any) -> Dict[s
 def _snapshot_outcome(telemetry: Dict[str, Any], result: Dict[str, Any]) -> tuple:
     """(frame_base64, no_frame_reason, snapshot_meta); an image is kept in memory for /api/ring/snapshot."""
     global _latest_snapshot
+    funnel.record_snapshot(result["status"])
     if result["status"] == "error":
         return None, result["reason"], None
     if result["status"] != "ok":
@@ -802,9 +805,17 @@ def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, 
     return result
 
 
+def _run_concierge(**kwargs: Any) -> Dict[str, Any]:
+    """One concierge analysis, counted in the funnel metrics with its latency (simulator and Partner)."""
+    started = time.perf_counter()
+    result = SupportConcierge().process_stream(**kwargs)
+    funnel.record_analysis(result, time.perf_counter() - started)
+    return result
+
+
 def _run_partner_concierge(telemetry: Dict[str, Any], frame_base64: Optional[str],
                            no_frame_reason: Optional[str], snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    result = SupportConcierge().process_stream(
+    result = _run_concierge(
         video_path=None, telemetry=telemetry, frame_base64=frame_base64, camera_active=True,
         no_frame_reason=no_frame_reason, ring_media=snapshot is not None,
     )
@@ -864,6 +875,7 @@ async def get_ring_events():
             _partner_events.insert(0, event)
             if event["start"] is not None and event["start"] > _SERVER_STARTED_MS:
                 new_events.append(event)
+                funnel.count("events_seen")
         del _partner_events[MAX_RECENT_EVENTS:]
         for event in new_events:
             result = await _analyze_partner_event(target, event)
@@ -915,8 +927,7 @@ async def analyze(req: AnalyzeRequest):
             raise HTTPException(status_code=404, detail=str(e)) from None
 
     try:
-        concierge = SupportConcierge()
-        result = concierge.process_stream(
+        result = _run_concierge(
             video_path=video_path,
             telemetry=telemetry,
             keyframe_second=req.keyframe_second,
@@ -935,6 +946,12 @@ async def analyze(req: AnalyzeRequest):
     except Exception:
         logger.exception("Diagnostic pipeline failed")
         raise HTTPException(status_code=500, detail="Internal error while running the diagnosis.") from None
+
+
+@app.get("/api/metrics")
+async def get_metrics():
+    """Analysis funnel counters and latencies since server start (memory only; no device IDs, images or text)."""
+    return funnel.snapshot()
 
 
 @app.post("/api/upload-video")

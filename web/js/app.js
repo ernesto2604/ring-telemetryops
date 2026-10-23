@@ -410,6 +410,7 @@ async function pollPartnerEvents() {
     showAppPushNotification(diag, 'event_session', report.trigger, report.checked_domains);
     setResolvedNote(false);
   }
+  if ((data.reports || []).length) loadFunnelMetrics();
 }
 
 function renderRingEvents(events) {
@@ -623,6 +624,7 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
   } finally {
     isAnalyzing = false;
     showAnalyzingIndicator(false);
+    loadFunnelMetrics();
   }
 }
 
@@ -786,6 +788,25 @@ async function loadEngineStatus() {
     // Unknown: the idle label simply says no diagnosis has run yet.
   }
   showReportProvider(null);
+  loadFunnelMetrics();
+}
+
+/** "Funnel (this session): Analyses 12 · healthy frames kept on server 7 · …" from GET /api/metrics. */
+function funnelLineText(m) {
+  return `Funnel (this session): Analyses ${m.analyses_total} · healthy frames kept on server ${m.precheck_nominal}`
+    + ` · Bedrock calls ${m.bedrock_calls} · fallbacks ${m.local_fallbacks}`
+    + ` · helpful ${m.feedback_up} / not helpful ${m.feedback_down}`;
+}
+
+async function loadFunnelMetrics() {
+  const el = document.getElementById('funnel-line');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/metrics');
+    if (r.ok) el.textContent = funnelLineText(await r.json());
+  } catch {
+    // Metrics are informative only; the line keeps its last value.
+  }
 }
 
 // Names the engine that produced the last report: a local fallback must not look like a Bedrock answer.
