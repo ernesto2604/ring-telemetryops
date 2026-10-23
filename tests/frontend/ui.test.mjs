@@ -1167,7 +1167,7 @@ test('Non-Twin modes never start a fake camera stream (RING-013)', () => {
   page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; activateCamera('live', 0);");
 
   assert.equal(page.run('cx.cameraActive'), false);
-  assert.ok(page.toasts.some(t => t.msg.includes('not implemented')));
+  assert.ok(page.toasts.some(t => t.msg.includes('Digital Twin only') && t.msg.includes('Ring live view')));   // T52
 });
 
 // ---------------------------------------------------------------------------

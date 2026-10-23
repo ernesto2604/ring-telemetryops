@@ -74,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is implemented with this server as the SDP intermediary (see "Ring live view" below). The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one. Recorded clips (`POST /v1/devices/{id}/media/video/download`) and best-effort RTSPS live stream statistics are available on demand (see "Recorded clips" and "Live stream stats" below); Ring live view (WHEP) in the browser is implemented and verified only with test doubles (signed webhooks are implemented and tested with fixtures only; see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is implemented with this server as the SDP intermediary (see "Ring live view" below). The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one. Recorded clips (`POST /v1/devices/{id}/media/video/download`) and best-effort RTSPS live stream statistics are available on demand (see "Recorded clips" and "Live stream stats" below); Ring live view (WHEP) in the browser is implemented (see "Verification status" below for what was checked live; signed webhooks are implemented and tested with fixtures only, see "Webhooks" below), and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -406,6 +406,18 @@ Bedrock charges. The Node tests run the page scripts against a fake DOM (no real
 Windows pass the file path to `node --test`, not the directory. The Node output contains traces such
 as HTTP 504, HTTP 429 and "Ring credentials are configured but the LIVE adapter failed to connect":
 those errors are simulated on purpose by the tests (they check how the UI handles them), not failures.
+Current totals: 869 pytest tests and 195 Node tests, all passing.
+
+#### Verification status
+
+* **Verified live against the Ring Developer Playground test device:** image
+  snapshots, recorded clips ("Analyze last recording"), RTSPS live stream stats and the Ring live view
+  (WHEP through this server). Bedrock analyses were verified live against AWS Bedrock with the simulator.
+* **Verified only with the test tool and fixtures:** signed webhooks (`tools/send_test_webhook` and signed
+  fixtures in the tests). Live Ring webhooks need a public HTTPS URL and a registered app, and were not
+  received.
+* Everything else in this README is covered by the automated tests above (local fakes and test doubles),
+  not by a live check.
 
 ### Demo walkthrough (B1–B5)
 
@@ -542,8 +554,9 @@ Partner mode only; the simulator is unchanged.
   sharpness score and the banding measure. Ring snapshots are measured without the top
   `RING_WATERMARK_BAND_PX` rows (100 px, at most 35 % of the height; a project heuristic); the simulator
   and the sample videos are measured as before.
-* **In memory only:** Ring frames are never written to disk or logged (the one exception is the
-  recorded-clip temporary file, deleted right after the analysis; see "Recorded clips"). The last one is kept in memory and
+* **In memory:** Ring snapshots are processed in memory and are never written to disk or logged. The one
+  exception is a recorded clip, which passes through a temporary file deleted in a `finally` block (see
+  "Recorded clips"). The last snapshot is kept in memory and
   served by `GET /api/ring/snapshot` (`Cache-Control: no-store`) for the Partner monitor, which shows it
   with Ring's time and origin.
 * **What reaches Bedrock:** a Ring image is sent only when the pre-check finds an image problem (blur,
@@ -585,7 +598,8 @@ Partner mode only; the simulator is unchanged.
 
 #### Live stream stats (M4, best effort): "Live stream stats (8 s)"
 
-* **Implemented; verified only against a test double; not verified against a live Ring stream.**
+* **Implemented; verified live against the Ring Developer Playground test device.** The tests use a test
+  double; whether a given OpenCV build can read the stream still depends on its FFmpeg and TLS support.
 * `POST /api/ring/live-stats` opens `rtsps://video.rtsp.amazonvision.com:322/v1/devices/{id}/stream` with
   OpenCV / FFmpeg over TCP (`OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp`, set only around the open
   and then restored). The token goes in `?token=`, because FFmpeg truncates long credentials in the URL user
@@ -600,8 +614,8 @@ Partner mode only; the simulator is unchanged.
 
 #### Ring live view (M3, WHEP): "Ring live view (up to 60 s)"
 
-* **Implemented; verified only with test doubles (fake WHEP server and a stubbed RTCPeerConnection); not
-  verified against a live Ring session.**
+* **Implemented; verified live against the Ring Developer Playground test device.** The automated tests
+  use a fake WHEP server and a stubbed RTCPeerConnection (no real browser).
 * **Why this server is in the middle:** Ring's API only accepts server-to-server calls (browsers are blocked
   by CORS). The browser builds the SDP offer (receive-only video, no audio, public STUN
   `stun:stun.l.google.com:19302`, handlers attached before the offer, ICE gathering awaited for at most 4 s)
@@ -638,8 +652,8 @@ Partner mode only; the simulator is unchanged.
   watermark band excluded, before any model sees them.
 * **Guardrails:** Bedrock answers are validated against the diagnostic contract (allowed values, findings
   and customer-text rules, one corrective retry) with a deterministic fallback when they still fail.
-* **Privacy:** Ring images are processed in memory (a recorded clip only passes through a temporary file
-  that is deleted at once), never stored or logged, and sent to Bedrock only for
+* **Privacy:** Ring snapshots are processed in memory (a recorded clip only passes through a temporary
+  file deleted in a `finally` block), never stored or logged, and sent to Bedrock only for
   an image anomaly; unreadable (encrypted) media is an expected outcome, not retried.
 
 ### Webhooks (implemented and tested with signed fixtures; not verified against live Ring webhooks, which need a public HTTPS URL and a registered app)
@@ -668,13 +682,16 @@ Partner mode only; the simulator is unchanged.
 
 ### Funnel metrics
 
-`GET /api/metrics` returns counters since the server started: analyses, pre-check nominal (the frame
-stays on the server), pre-check anomaly, insufficient data, Bedrock calls and retries (a call that failed
+`GET /api/metrics` returns counters since the server started: analyses, pre-check nominal ("healthy
+frames kept on server": the frame was checked as healthy and not sent to Bedrock, including a Partner
+"Partial check" whose image was OK), pre-check anomaly, insufficient data, Bedrock calls and retries (a call that failed
 before the fallback counts), local fallbacks, snapshots OK and failed by cause, new events (Event
 History or webhooks) and feedback votes, plus median and p95 latency per engine (`bedrock`,
 `local_fallback`, `precheck`) over the last 100 analyses, and recorded clips requested, OK and failed
 by cause (`clips_requested`, `clips_ok`, `clips_failed`). They live in memory only and reset on restart;
-no device IDs, images or free text. The engine panel shows them as "Funnel (this session)".
+no device IDs, images or free text. The engine panel shows them as "Funnel (this session)", refreshed
+after each analysis from the UI and after each Ring events poll (event and webhook analyses run in the
+background).
 
 ### User feedback
 

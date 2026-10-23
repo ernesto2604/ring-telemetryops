@@ -35,8 +35,14 @@ def test_pending_source_verification_matches_the_evidence_level(article_id):
 
 
 # C5: the paths that Ring's official API documentation lists (checked 2026-10-21) say so; the fields
-# the KB attaches to them stay unverified, and none of them is implemented here.
+# the KB attaches to them stay unverified. Each note says whether this project implements the path:
+# "not implemented", or the file that implements it (T52: Event History and WHEP are implemented).
 DOCUMENTED_PATH = "path matches Ring's official API documentation"
+IMPLEMENTED_IN = ("src/utils/ring_partner_client.py", "src/api/whep.py")
+
+
+def states_implementation(note):
+    return "not implemented" in note or any(path in note for path in IMPLEMENTED_IN)
 
 
 def test_every_api_mapping_is_marked_unverified_or_path_only():
@@ -44,8 +50,8 @@ def test_every_api_mapping_is_marked_unverified_or_path_only():
     for article_id, mapping in MAPPINGS:
         note = mapping["verification"]
         if note.startswith(DOCUMENTED_PATH):
-            # Only the path is confirmed: the fields and the implementation are explicitly not.
-            assert "not verified" in note and "not implemented" in note, (article_id, mapping["endpoint"])
+            # Only the path is confirmed: the fields are explicitly not, and the implementation state is named.
+            assert "not verified" in note and states_implementation(note), (article_id, mapping["endpoint"])
         else:
             assert note.startswith("unverified"), (article_id, mapping["endpoint"])
 
@@ -54,13 +60,17 @@ def mapping(article_id, endpoint_part):
     return next(m for a, m in MAPPINGS if a == article_id and endpoint_part in m["endpoint"])
 
 
-def test_motion_events_endpoint_is_not_presented_as_queryable():
+def test_motion_events_endpoint_names_its_client_but_not_the_motion_events_as_verified():
     note = mapping("KB-RING-010", "/events")["verification"].lower()
-    assert "motion" in note and "not verified" in note and "not implemented" in note
+    assert "motion" in note and "not verified" in note and "src/utils/ring_partner_client.py" in note
+    assert "not implemented" not in note
 
 
-def test_whep_endpoint_is_marked_not_implemented():
-    assert "not implemented" in mapping("KB-RING-015", "/whep/")["verification"].lower()
+def test_whep_endpoint_is_marked_implemented_with_the_server_as_intermediary():
+    note = mapping("KB-RING-015", "/whep/")["verification"]
+    assert "not implemented" not in note
+    assert "SDP intermediary" in note and "src/api/whep.py" in note and "web/js/whep.js" in note
+    assert "not verified" in note   # the other session details stay unverified
 
 
 @pytest.mark.parametrize("article_id", ["KB-RING-011", "KB-RING-012"])
@@ -98,7 +108,10 @@ def test_whep_symptom_and_fact_state_that_whep_is_unverified():
     article = KB["KB-RING-015"]
     assert not any("/v1/" in s for s in article["symptoms"])
     whep_fact = next(f for f in article["official_facts"] if "WHEP (WebRTC HTTP Egress Protocol)" in f)
-    assert "unverified" in whep_fact and "not implemented" in whep_fact
+    assert "unverified" in whep_fact and "not implemented" not in whep_fact
+    assert "SDP intermediary" in whep_fact and "web/js/whep.js" in whep_fact
+    assert "not implemented" not in article["source_verification"]
+    assert article["source_verification"].startswith("pending")
 
 
 @pytest.mark.parametrize("article_id, endpoint_part", [
@@ -113,7 +126,7 @@ def test_documented_ring_paths_are_confirmed_but_fields_stay_unverified(article_
     note = mapping(article_id, endpoint_part)["verification"]
     assert note.startswith(DOCUMENTED_PATH)
     assert "developer.amazon.com/docs/ring/api-documentation.html" in note and "2026-10-21" in note
-    assert "not verified" in note and "not implemented" in note
+    assert "not verified" in note and states_implementation(note)
 
 
 def test_evidence_levels_are_unchanged():

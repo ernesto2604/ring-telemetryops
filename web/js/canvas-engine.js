@@ -150,9 +150,9 @@ function activateCamera(reason, durationSec = 30) {
 
   if (!video || !canvas) return;
   if (state.ringMode !== 'MOCK') {
-    // Only the Digital Twin has a camera feed (a sample MP4). Ring Partner API live video is not
-    // implemented, so nothing is ever shown as a Ring stream.
-    showToast('Live video is not available: Ring Partner API streaming is not implemented.', 'error');
+    // Only the Digital Twin has a simulated camera feed (a sample MP4). Ring video goes through
+    // "Ring live view" (WHEP, web/js/whep.js), so this simulated feed is never shown as a Ring stream.
+    showToast('The simulated live view is Digital Twin only: use "Ring live view" for Ring video.', 'error');
     return;
   }
 

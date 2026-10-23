@@ -19,7 +19,7 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
   GET /v1/history/devices/{device_id}/events  Event History (paginated by links.next)
   rtsps://video.rtsp.amazonvision.com:322/v1/devices/{device_id}/stream?token=...
                                              Live stream read for a few seconds with OpenCV/FFmpeg (best
-                                             effort; verified only against a test double)
+                                             effort; verified live against the Ring Developer Playground)
 
 REQUIRED HEADERS:
   - Every request sends `User-Agent: RingTelemetryOps/<version>` and `Hardware_Id: <UUID>`.

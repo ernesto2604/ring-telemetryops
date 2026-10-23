@@ -929,7 +929,7 @@ async def ring_live_stats(device_id: Optional[str] = None):
     return {"source": "ring_partner_api", "live": {**live, "label": LIVE_STATS_LABEL}}
 
 
-# Event History polling (webhooks are not implemented). In memory: the last 20 events, the IDs
+# Event History polling (webhooks: see /webhooks/ring below). In memory: the last 20 events, the IDs
 # already seen, and the query pacing. Events that started before this server did are listed but
 # never analyzed, so a restart does not replay the history.
 MAX_RECENT_EVENTS = 20
