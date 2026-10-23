@@ -417,7 +417,8 @@ async function pollPartnerEvents() {
     showAppPushNotification(diag, 'event_session', report.trigger, report.checked_domains);
     setResolvedNote(false);
   }
-  if ((data.reports || []).length) loadFunnelMetrics();
+  // Event and webhook analyses run in the background and a healthy one is silent: refresh the counters anyway.
+  loadFunnelMetrics();
 }
 
 function renderRingEvents(events) {

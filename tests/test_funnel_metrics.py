@@ -81,6 +81,20 @@ def test_partner_snapshot_success_and_failure_are_counted_by_cause(partner):  # 
                                      "unreadable_image": 0, "time_range_not_authorized": 0, "other": 0}
     # Partner never shares Wi-Fi or power: both analyses end as INSUFFICIENT_DATA from the pre-check.
     assert m["analyses_total"] == 2 and m["insufficient_data"] == 2
+    # T50: only the first one had a (healthy) image, which stayed on the server.
+    assert m["precheck_nominal"] == 1 and m["bedrock_calls"] == 0
+
+
+def test_insufficient_data_counts_a_healthy_frame_only_when_one_was_analyzed():
+    f = Funnel()
+    partial = {"_provider": "precheck", "analysis_skipped": False,
+               "diagnostic_result": {"diagnostic_status": "INSUFFICIENT_DATA"}}
+    f.record_analysis({**partial, "video_metrics": {"status": "OK"}}, 0.01)
+    for status in ("UNAVAILABLE", "STANDBY"):
+        f.record_analysis({**partial, "video_metrics": {"status": status}}, 0.01)
+    f.record_analysis(partial, 0.01)
+    m = f.snapshot()
+    assert m["insufficient_data"] == 4 and m["precheck_nominal"] == 1 and m["precheck_anomaly"] == 0
 
 
 def test_metrics_carry_no_device_ids_images_or_text(partner):  # noqa: F811

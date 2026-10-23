@@ -216,7 +216,7 @@ def test_healthy_clip_reports_recording_stats_and_keeps_frames_on_server(clip_pa
     metrics = api.get("/api/metrics").json()
     # Partner never shares Wi-Fi or power: a healthy image ends as INSUFFICIENT_DATA from the pre-check.
     assert metrics["clips_requested"] == 1 and metrics["clips_ok"] == 1 and metrics["insufficient_data"] == 1
-    assert metrics["bedrock_calls"] == 0
+    assert metrics["bedrock_calls"] == 0 and metrics["precheck_nominal"] == 1   # T50: healthy frame kept
     assert not os.path.exists(temp_paths[0])
     out = capsys.readouterr()
     for secret in (TOKEN, CLIP_PRESIGNED_PATH, temp_paths[0]):

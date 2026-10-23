@@ -1973,6 +1973,18 @@ test('T38: the funnel line refreshes after each analysis', async () => {
   assert.match(page.el('funnel-line').textContent, /^Funnel \(this session\): Analyses 1 ·/);
 });
 
+test('T50: the funnel line refreshes after an event poll, even when the background analysis was silent', async () => {
+  const page = loadPage({
+    '/api/ring/events': { status: 200, body: { events: [], reports: [] } },
+    '/api/metrics': { status: 200, body: { ...METRICS, analyses_total: 4, precheck_nominal: 3 } },
+  });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  await page.run('pollPartnerEvents()');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(page.requests.filter(r => r.url === '/api/metrics').length, 1);
+  assert.match(page.el('funnel-line').textContent, /^Funnel \(this session\): Analyses 4 · healthy frames kept on server 3 ·/);
+});
+
 test('T38: a failed metrics request keeps the previous line', async () => {
   const page = loadPage({ '/api/metrics': { status: 500, body: {} } });
   page.el('funnel-line').textContent = 'Funnel (this session): —';

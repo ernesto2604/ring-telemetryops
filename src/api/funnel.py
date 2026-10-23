@@ -42,6 +42,9 @@ class Funnel:
         self.count("analyses_total")
         if status == "INSUFFICIENT_DATA" and provider == "precheck":
             self.count("insufficient_data")
+            # Reached only without a pre-check anomaly: a frame that was analyzed is healthy and stayed here.
+            if (result.get("video_metrics") or {}).get("status") not in (None, "UNAVAILABLE", "STANDBY"):
+                self.count("precheck_nominal")
         elif result.get("analysis_skipped"):
             self.count("precheck_nominal")   # healthy frame or no anomaly: nothing left the server
         else:
