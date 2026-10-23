@@ -27,6 +27,16 @@ STREAM_MIN_BITRATE_KBPS = severity.limit("bitrate", "Low")
 # Issues about the stream rather than the image; the concierge judges them as stream metrics.
 STREAM_ISSUE_PREFIXES = ("Deficient frame rate", "Critically low bitrate")
 
+# Ring burns a mandatory watermark into all its media (logo top-left; device ID, app name and time
+# top-right). Its text raises the Laplacian variance, so Ring frames can be measured without the top
+# band. Heuristic of this project (the watermark sits in that band), not a Ring specification.
+RING_WATERMARK_TOP_FRACTION = 0.10
+
+
+def crop_ring_watermark(frame: np.ndarray) -> np.ndarray:
+    """Drops the top RING_WATERMARK_TOP_FRACTION of the rows, where Ring draws its watermark."""
+    return frame[int(round(frame.shape[0] * RING_WATERMARK_TOP_FRACTION)):]
+
 
 def sharpness_score(gray: np.ndarray) -> float:
     """Laplacian variance of a grayscale frame, downscaled to SHARPNESS_ANALYSIS_WIDTH if wider."""
@@ -38,8 +48,10 @@ def sharpness_score(gray: np.ndarray) -> float:
 
 
 class VideoAnalyzer:
-    def __init__(self, video_path: str):
+    def __init__(self, video_path: str, crop_watermark: bool = False):
+        """`crop_watermark`: measure Ring media without the watermark band (off for the simulator and samples)."""
         self.video_path = Path(video_path)
+        self.crop_watermark = crop_watermark
         if not self.video_path.exists():
             raise FileNotFoundError(f"File not found: {self.video_path}")
 
@@ -137,12 +149,16 @@ class VideoAnalyzer:
         frame_base64: str,
         telemetry: dict = None,
         max_width: int = 720,
-        jpeg_quality: int = 75
+        jpeg_quality: int = 75,
+        crop_watermark: bool = False,
     ) -> tuple[dict, str]:
         """
         Analyzes a Base64 frame in-memory (extracted directly from live WebRTC Canvas).
         Computes sharpness (Laplacian variance), mean brightness, chromatic balance (magenta tint),
         and rolling-shutter 50Hz/60Hz AC flicker banding.
+
+        `crop_watermark`: drop the Ring watermark band before measuring (the returned image is
+        cropped too, so the model sees the measured pixels). Off by default.
 
         Returns: (video_metrics: dict, clean_image_base64: str)
         """
@@ -151,6 +167,8 @@ class VideoAnalyzer:
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
             raise ValueError("Could not decode Base64 frame")
+        if crop_watermark:
+            frame = crop_ring_watermark(frame)
 
         # Measured before the max_width resize so the score does not depend on the caller's max_width.
         laplacian_var = sharpness_score(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
@@ -259,6 +277,8 @@ class VideoAnalyzer:
 
             frames_read += 1
             if frames_read % 5 == 0:
+                if self.crop_watermark:
+                    frame = crop_ring_watermark(frame)
                 blur_scores.append(sharpness_score(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
 
         cap.release()
