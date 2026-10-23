@@ -521,12 +521,15 @@ Partner mode only; the simulator is unchanged.
 * **Supported settings only:** when the capabilities list the image enhancements, a setting missing from
   that list is `null` (shown as "n/a"), not "off". `device_context.snapshot_supported` is true only when
   the list includes `snapshot`; `features.snapshot` in `/api/ring/status` also requires readable video.
-* **Snapshot (two steps, server to server):** "Analyze now" requests the latest image of the last 24 h
-  (`POST .../media/image/download`, JPEG, no resolution so the watermark covers the least, the first
-  component on multi-camera devices). Ring answers `303` with a pre-signed URL, which the server fetches
+* **Snapshot (two steps, server to server):** "Analyze now" requests the image at the start of the newest
+  known event (`at_timestamp`), tries up to two older events when Ring returns no usable image (about 20 s in
+  total), and falls back to the latest image of the last 24 h (`POST .../media/image/download`, JPEG, no
+  resolution so the watermark covers the least, the first component on multi-camera devices). Ring answers `303` with a pre-signed URL, which the server fetches
   **without** the access token and reads `X-Media-Timestamp` / `X-Media-Origin`. Only a decodable JPEG or
   PNG of at most 10 MB is used. "Not ready" (425) is retried for up to about 15 s, 500/503 once; "no recent
-  recording" (416) and "corrupt recording" (422) are normal outcomes explained in the visual findings. No
+  recording" (416), "could not decrypt" (422 `GRECO_NO_VALID_KEY`), "damaged recording" (422
+  `CORRUPT_RECORDING`) and an unreadable image are normal outcomes, each explained in the visual findings
+  and the mitigation. No
   snapshot is requested for encrypted video or a device without snapshot support.
 * **Watermark:** Ring media carries a mandatory watermark in its top corners, which would inflate the
   sharpness score and the banding measure. Ring snapshots are measured without the top
@@ -584,6 +587,9 @@ Partner mode only; the simulator is unchanged.
   reports them as unavailable ("not simulated by the Digital Twin sliders").
 * **Ring banding calibration:** the periodicity gate for Ring frames was checked on three Ring
   Playground frames and synthetic scenes only; flicker in real Ring media has not been observed yet.
+* **Undecryptable Ring recordings:** Ring can answer the pre-signed image download with
+  `422 GRECO_NO_VALID_KEY` (not in its documentation) for some recordings, including the one behind
+  "latest image of the last 24 h". That is why "Analyze now" starts from the newest event and tries up to three.
 * **Confidence** is self-assessed by the model (Bedrock) or fixed (0.86, fallback); see above.
 * **Mechanical in-home chime (B5)** is simulator / CLI / API only (see the demo walkthrough).
 
