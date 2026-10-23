@@ -789,7 +789,11 @@ function renderResult(diag, data = {}) {
   const bar = document.getElementById('diag-status-bar');
   if (bar) bar.className = 'diagnostic-status ' + status;
   document.getElementById('diag-icon').textContent        = icons[status] || '❓';
-  document.getElementById('diag-status-text').textContent = healthy ? 'Healthy' : status;
+  // Partner (checked_domains): customer wording for INSUFFICIENT_DATA; the technical value stays in Technical details.
+  const domains = Array.isArray(data.checked_domains) ? data.checked_domains : null;
+  const partialLabel = domains && status === 'INSUFFICIENT_DATA'
+    ? (domains.some(d => d.status !== 'not_available') ? 'Partial check' : 'Not enough data') : null;
+  document.getElementById('diag-status-text').textContent = healthy ? 'Healthy' : partialLabel || status;
   document.getElementById('diag-domain-text').textContent = healthy ? 'No issues detected' : domainLabel(domain);
 
   document.getElementById('conf-fill').style.width = confidence + '%';

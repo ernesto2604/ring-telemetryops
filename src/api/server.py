@@ -68,6 +68,7 @@ from src.utils.ring_partner_client import (
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
 from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
+from src.video_pipeline.analyzer import STREAM_ISSUE_PREFIXES
 from src.config import severity
 
 logger = logging.getLogger(__name__)
@@ -687,15 +688,52 @@ _events_poll = {"last_query": None, "paused_until": 0.0}
 EVENT_TRIGGERS = {"ding": "ding", "motion": "motion", "on_demand": "live"}
 
 
+PARTNER_NOT_SHARED = "Ring does not share Wi-Fi or power data with partner apps"
+PARTNER_IMAGE_OK_MITIGATION = (
+    "The camera image looks fine. Ring doesn't share Wi-Fi or battery data with this app: "
+    "check them in the Ring app under Device Health."
+)
+PARTNER_NO_IMAGE_MITIGATION = (
+    "Ring doesn't share Wi-Fi or battery data with this app, and no recent recording was available to "
+    "check the image. Check Device Health in the Ring app."
+)
+
+
+def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Partner reports: which domains were checked (image / network / power) and, when the verdict is
+    INSUFFICIENT_DATA, customer wording for the mitigation. diagnostic_status is never changed.
+    """
+    issues = [i for i in (result.get("video_metrics") or {}).get("issues") or []
+              if not i.startswith(STREAM_ISSUE_PREFIXES)]
+    if snapshot is None:
+        image = {"domain": "image", "status": "not_available",
+                 "detail": (result.get("video_analysis") or {}).get("reason") or "No Ring image was analyzed"}
+    elif issues:
+        image = {"domain": "image", "status": "issue", "detail": "; ".join(issues)}
+    else:
+        image = {"domain": "image", "status": "ok", "detail": "Ring snapshot checked: no image issue detected"}
+    result["checked_domains"] = [
+        image,
+        {"domain": "network", "status": "not_available", "detail": PARTNER_NOT_SHARED},
+        {"domain": "power", "status": "not_available", "detail": PARTNER_NOT_SHARED},
+    ]
+    if snapshot is not None:
+        result["snapshot"] = snapshot
+    diag = result.get("diagnostic_result") or {}
+    if diag.get("diagnostic_status") == "INSUFFICIENT_DATA":
+        diag["recommended_mitigation"] = (
+            PARTNER_IMAGE_OK_MITIGATION if image["status"] == "ok" else PARTNER_NO_IMAGE_MITIGATION)
+    return result
+
+
 def _run_partner_concierge(telemetry: Dict[str, Any], frame_base64: Optional[str],
                            no_frame_reason: Optional[str], snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     result = SupportConcierge().process_stream(
         video_path=None, telemetry=telemetry, frame_base64=frame_base64, camera_active=True,
         no_frame_reason=no_frame_reason, ring_media=snapshot is not None,
     )
-    if snapshot is not None:
-        result["snapshot"] = snapshot
-    return result
+    return _finish_partner_report(result, snapshot)
 
 
 async def _analyze_partner_event(device_id: str, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -778,7 +816,8 @@ async def analyze(req: AnalyzeRequest):
     if wants_live and ring_source_error:
         raise HTTPException(status_code=503, detail=ring_source_error)
     snapshot = None
-    if wants_live and ring_source == "partner":
+    partner_analysis = wants_live and ring_source == "partner"
+    if partner_analysis:
         # Always official telemetry; caller-supplied telemetry is not presented as Ring data.
         telemetry = await _partner_telemetry(req.device_id)
         # Only a Ring snapshot is a Ring camera image: the caller's frame and camera_active are ignored.
@@ -810,8 +849,8 @@ async def analyze(req: AnalyzeRequest):
             no_frame_reason=no_frame_reason,
             ring_media=snapshot is not None,
         )
-        if snapshot is not None:
-            result["snapshot"] = snapshot
+        if partner_analysis:
+            result = _finish_partner_report(result, snapshot)
         return result
     except ValueError:
         # Undecodable frame or unreadable video; details (paths) stay in the server log.

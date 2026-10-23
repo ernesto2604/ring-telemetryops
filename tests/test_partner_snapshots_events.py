@@ -441,3 +441,59 @@ def test_401_on_events_keeps_the_token_rejected_reason(events_partner):
 
 def test_events_require_partner_mode():
     assert api.get("/api/ring/events").status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# T29: per-domain verdict in Partner reports
+# ---------------------------------------------------------------------------
+
+def domains_by_name(body):
+    return {d["domain"]: d for d in body["checked_domains"]}
+
+
+def test_healthy_image_is_a_partial_check_with_customer_mitigation(partner):
+    body = analyze().json()
+
+    domains = domains_by_name(body)
+    assert domains["image"]["status"] == "ok"
+    assert domains["network"] == {"domain": "network", "status": "not_available",
+                                  "detail": "Ring does not share Wi-Fi or power data with partner apps"}
+    assert domains["power"]["status"] == "not_available"
+    diag = body["diagnostic_result"]
+    assert diag["diagnostic_status"] == "INSUFFICIENT_DATA"            # unchanged
+    assert diag["recommended_mitigation"] == server.PARTNER_IMAGE_OK_MITIGATION
+    assert "Collect the missing metrics" not in json.dumps(body)
+
+
+def test_image_anomaly_is_an_image_issue_and_keeps_its_mitigation(partner):
+    ring, _ = partner
+    ring.image = jpeg(blurry_frame())
+
+    body = analyze().json()
+
+    image = domains_by_name(body)["image"]
+    assert image["status"] == "issue" and "sharpness" in image["detail"].lower()
+    assert body["diagnostic_result"]["diagnostic_status"] != "INSUFFICIENT_DATA"
+    assert body["diagnostic_result"]["recommended_mitigation"] not in (
+        server.PARTNER_IMAGE_OK_MITIGATION, server.PARTNER_NO_IMAGE_MITIGATION)
+
+
+def test_without_image_nothing_is_checked(partner):
+    ring, _ = partner
+    ring.snapshot_replies = [(416, None, "MEDIA_NOT_FOUND")]
+
+    body = analyze().json()
+
+    image = domains_by_name(body)["image"]
+    assert image == {"domain": "image", "status": "not_available",
+                     "detail": server.SNAPSHOT_REASONS["no_recent_media"]}
+    assert body["diagnostic_result"]["diagnostic_status"] == "INSUFFICIENT_DATA"
+    assert body["diagnostic_result"]["recommended_mitigation"] == server.PARTNER_NO_IMAGE_MITIGATION
+
+
+def test_simulator_reports_have_no_checked_domains():
+    frame = base64.b64encode(jpeg(sharp_frame())).decode()
+    body = api.post("/api/analyze", json={"source_mode": "twin", "camera_active": True, "frame_base64": frame,
+                                          "telemetry": {"scenario": "nominal"}}).json()
+    assert "checked_domains" not in body
+    assert body["diagnostic_result"]["recommended_mitigation"] != server.PARTNER_NO_IMAGE_MITIGATION

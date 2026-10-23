@@ -1857,3 +1857,34 @@ test('T28: events Retry-After pauses the next event queries', async () => {
   await page.run('pollPartnerEvents()');
   assert.equal(page.requests.filter(r => r.url === '/api/ring/events').length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// T29: Partner customer label from checked_domains
+// ---------------------------------------------------------------------------
+
+const PARTNER_DOMAINS = image => [
+  { domain: 'image', status: image, detail: '' },
+  { domain: 'network', status: 'not_available', detail: 'Ring does not share Wi-Fi or power data with partner apps' },
+  { domain: 'power', status: 'not_available', detail: 'Ring does not share Wi-Fi or power data with partner apps' },
+];
+
+for (const [image, status, label] of [
+  ['ok', 'INSUFFICIENT_DATA', 'Partial check'],
+  ['not_available', 'INSUFFICIENT_DATA', 'Not enough data'],
+  ['issue', 'DEGRADED', 'DEGRADED'],
+]) {
+  test(`T29: Partner image ${image} -> customer label "${label}", technical value kept`, () => {
+    const page = loadPage();
+    const diag = { diagnostic_status: status, root_cause_domain: 'UNKNOWN', confidence_score: 0 };
+    page.run(`renderResult(${JSON.stringify(diag)}, ${JSON.stringify({ checked_domains: PARTNER_DOMAINS(image) })})`);
+    assert.equal(page.el('diag-status-text').textContent, label);
+    assert.equal(page.el('tech-level').textContent, status);
+  });
+}
+
+test('T29: simulator reports keep INSUFFICIENT_DATA as the label', () => {
+  const page = loadPage();
+  const diag = { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'UNKNOWN', confidence_score: 0 };
+  page.run(`renderResult(${JSON.stringify(diag)}, {})`);
+  assert.equal(page.el('diag-status-text').textContent, 'INSUFFICIENT_DATA');
+});
