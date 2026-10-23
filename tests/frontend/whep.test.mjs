@@ -31,6 +31,7 @@ function loadLiveView({ post = { status: 200, body: SESSION }, ice = 'event', st
   };
   el('partner-snapshot').style.display = '';
   el('ring-live-video').style.display = 'none';
+  el('monitor-title').textContent = 'Camera monitor — Ring';
   el('monitor-source-label').textContent = 'Ring snapshot (latest recording) · 2026-10-23 10:00:00 UTC · recording';
 
   const calls = [];
@@ -212,6 +213,7 @@ test('the video replaces the snapshot and the label shows the start time', async
   assert.equal(page.el('ring-live-video').style.display, '');
   assert.equal(page.el('ring-live-video').srcObject.id, 'ring-stream');
   assert.equal(page.el('partner-snapshot').style.display, 'none');
+  assert.equal(page.el('monitor-title').textContent, 'Ring live view');
   assert.match(page.el('monitor-source-label').textContent, /^Ring live view · started \d{2}:\d{2}:\d{2}$/);
   assert.match(page.el('ring-live-view-status').textContent, /ends automatically within 30–60 s/);
   assert.equal(page.el('btn-ring-live-stop').style.display, '');
@@ -242,6 +244,7 @@ for (const [name, end] of [
     assert.equal(page.el('ring-live-video').style.display, 'none');
     assert.equal(page.el('ring-live-video').srcObject, null);
     assert.equal(page.el('partner-snapshot').style.display, '');
+    assert.equal(page.el('monitor-title').textContent, 'Camera monitor — Ring');
     assert.match(page.el('monitor-source-label').textContent, /^Ring snapshot \(latest recording\)/);
     assert.equal(page.el('btn-ring-live').disabled, false);
     assert.equal(page.el('btn-ring-live-stop').style.display, 'none');

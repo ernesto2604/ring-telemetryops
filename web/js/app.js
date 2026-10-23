@@ -178,6 +178,8 @@ function applyPartnerModeUI() {
   if (modeLabel) modeLabel.textContent = '● Manual analysis (Ring Partner API)';
   const sourceLabel = document.getElementById('telemetry-source-label');
   if (sourceLabel) sourceLabel.textContent = 'Ring Partner API (device status only)';
+  const monitorTitle = document.getElementById('monitor-title');
+  if (monitorTitle) monitorTitle.textContent = 'Camera monitor — Ring';
   const monitorLabel = document.getElementById('monitor-source-label');
   if (monitorLabel) monitorLabel.textContent = 'Ring snapshot: none yet (run Analyze now)';
   const powerPill = document.getElementById('power-mode-status-pill');

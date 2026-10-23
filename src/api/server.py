@@ -973,7 +973,8 @@ def _finish_partner_report(result: Dict[str, Any], snapshot: Optional[Dict[str, 
     elif issues:
         image = {"domain": "image", "status": "issue", "detail": "; ".join(issues)}
     else:
-        image = {"domain": "image", "status": "ok", "detail": "Ring snapshot checked: no image issue detected"}
+        checked = "Ring recording checked" if snapshot.get("media_origin") == "recording_clip" else "Ring snapshot checked"
+        image = {"domain": "image", "status": "ok", "detail": f"{checked}: no image issue detected"}
     result["checked_domains"] = [
         image,
         {"domain": "network", "status": "not_available", "detail": PARTNER_NOT_SHARED},

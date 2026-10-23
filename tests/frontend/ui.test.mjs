@@ -1785,6 +1785,7 @@ test('T27: Partner monitor label no longer says retrieval is not integrated', ()
   const page = loadPage();
   page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI();");
   assert.equal(page.el('monitor-source-label').textContent, 'Ring snapshot: none yet (run Analyze now)');
+  assert.equal(page.el('monitor-title').textContent, 'Camera monitor — Ring');   // T51
 });
 
 test('T27: Analyze now with a snapshot shows it with Ring time and origin', async () => {
@@ -2086,7 +2087,7 @@ const CLIP_REPORT = {
   _provider: 'precheck',
   diagnostic_result: { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'NONE', confidence_score: 1,
                        telemetry_findings: [], visual_findings: [], recommended_mitigation: 'Check Device Health.' },
-  checked_domains: [{ domain: 'image', status: 'ok', detail: 'Ring snapshot checked: no image issue detected' }],
+  checked_domains: [{ domain: 'image', status: 'ok', detail: 'Ring recording checked: no image issue detected' }],
   clip: { status: 'ok', label: 'Recording stats (from Ring recording, not live network)', duration_seconds: 5,
           fps: 15, resolution: '1280x720', bitrate_mbps: 1.2, frames_checked: 3 },
 };
@@ -2101,7 +2102,7 @@ test('T43: a clip shows recording stats and the image verdict, and leaves the ne
 
   assert.equal(page.el('ring-media-stats').textContent,
     'Recording stats (from Ring recording, not live network): 5.0 s · 15 fps · 1280x720 · 1.2 Mbps'
-    + ' · Image: Ring snapshot checked: no image issue detected');
+    + ' · Image: Ring recording checked: no image issue detected');
   assert.equal(page.el('m-jitter').textContent, 'N/D');
   assert.ok(page.requests.some(r => r.url === '/api/ring/clip-analysis'));
   assert.equal(page.el('btn-analyze-clip').disabled, false);

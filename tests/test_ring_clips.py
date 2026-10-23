@@ -209,7 +209,7 @@ def test_healthy_clip_reports_recording_stats_and_keeps_frames_on_server(clip_pa
     assert "frames" not in stats
     assert clip_posts(clip_partner)[0]["json"]["timestamp"] == EVENT_STARTS[0]
     image = next(d for d in body["checked_domains"] if d["domain"] == "image")
-    assert image["status"] == "ok"
+    assert image["status"] == "ok" and image["detail"] == "Ring recording checked: no image issue detected"
     network = next(d for d in body["checked_domains"] if d["domain"] == "network")
     assert network["status"] == "not_available"   # recording stats never fill network values
     assert llm_calls == []   # healthy frames never leave the server

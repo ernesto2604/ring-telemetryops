@@ -50,6 +50,8 @@ function showRingLiveVideo(session, stream) {
   if (img) img.style.display = 'none';
   const standby = ringLiveEl('camera-standby-screen');
   if (standby) standby.style.display = 'none';
+  const title = ringLiveEl('monitor-title');
+  if (title) title.textContent = 'Ring live view';
   const label = ringLiveEl('monitor-source-label');
   if (label) label.textContent = `Ring live view · started ${hhmmss(session.startedAt)}`;
 }
@@ -65,6 +67,8 @@ function restoreRingMonitor(session) {
   if (img) img.style.display = monitor.snapshotDisplay;
   const standby = ringLiveEl('camera-standby-screen');
   if (standby) standby.style.display = monitor.standbyDisplay;
+  const title = ringLiveEl('monitor-title');
+  if (title) title.textContent = monitor.title;
   const label = ringLiveEl('monitor-source-label');
   if (label) label.textContent = monitor.label;
 }
@@ -140,6 +144,7 @@ async function startRingLiveView() {
   if (ringLive) return;
   const img = ringLiveEl('partner-snapshot');
   const standby = ringLiveEl('camera-standby-screen');
+  const title = ringLiveEl('monitor-title');
   const label = ringLiveEl('monitor-source-label');
   const pc = new RTCPeerConnection({ iceServers: [{ urls: RING_WHEP_STUN }] });
   const session = {
@@ -147,6 +152,7 @@ async function startRingLiveView() {
     monitor: {
       snapshotDisplay: img ? img.style.display : 'none',
       standbyDisplay: standby ? standby.style.display : '',
+      title: title ? title.textContent : '',
       label: label ? label.textContent : '',
     },
   };
