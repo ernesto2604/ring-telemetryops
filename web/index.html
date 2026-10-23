@@ -396,9 +396,11 @@
         </div>
         <div class="provider-row">
           <button class="provider-btn" id="btn-analyze-now" onclick="runManualDiagnosis()" style="display:none;">🩺 Analyze now</button>
+          <button class="provider-btn" id="btn-analyze-clip" onclick="runClipAnalysis()" style="display:none;" title="Downloads 5 s of the newest event's Ring recording">🎞️ Analyze last recording (5 s)</button>
           <span class="provider-btn active" id="engine-provider" title="Engine that produced the last diagnosis">⏸️ No diagnosis yet</span>
         </div>
       </div>
+      <div id="ring-media-stats" role="status" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;display:none;"></div>
       <div id="funnel-line" style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;" title="Counted in server memory since it started; not stored">Funnel (this session): —</div>
     </div>
 

@@ -13,6 +13,9 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
   GET /v1/devices/{device_id}/capabilities   Device Capabilities
   POST /v1/devices/{device_id}/media/image/download, then GET of the pre-signed Location
                                              Image snapshot (the token is never sent to that URL)
+  POST /v1/devices/{device_id}/media/video/download
+                                             Recorded clip: 200/206 with the MP4, or a redirect to a
+                                             pre-signed URL fetched without the token
   GET /v1/history/devices/{device_id}/events  Event History (paginated by links.next)
 
 REQUIRED HEADERS:
@@ -410,6 +413,21 @@ SNAPSHOT_ERROR_MAX_BYTES = 4096            # JSON error body read from a failed 
 UNDECRYPTABLE_CODES = ("GRECO_NO_VALID_KEY",)
 
 
+CLIP_DURATION_MS = 5000
+CLIP_WAIT_BUDGET_SECONDS = 20.0            # total wait for 416/425 on a clip
+CLIP_MAX_BYTES = 20 * 1024 * 1024          # design limit for one 5 s clip, not a Ring value
+_REDIRECTS = (301, 302, 303)
+
+
+def _clip_result(status: str) -> Dict[str, Any]:
+    return {"status": status, "video": None, "partial": False, "media_length": None}
+
+
+def _is_mp4(data: bytes) -> bool:
+    """ISO base media file: the first box is `ftyp` (bytes 4-8)."""
+    return len(data) >= 12 and data[4:8] == b"ftyp"
+
+
 def _snapshot_result(status: str) -> Dict[str, Any]:
     return {"status": status, "image": None, "content_type": None, "media_timestamp": None, "media_origin": None}
 
@@ -668,84 +686,162 @@ class RingPartnerClient:
         path = f"{self._device_path(device_id)}/media/image/download"
 
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            outcome = await self._media_post(session, path, body, wait_for_recording, wait_budget_seconds)
+            if outcome[0] == "failed":
+                return _snapshot_result(outcome[1])
+            return await self._fetch_presigned(session, outcome[1])
+
+    async def download_clip(
+        self,
+        device_id: str,
+        timestamp_ms: int,
+        component_id: Optional[str] = None,
+        duration_ms: int = CLIP_DURATION_MS,
+        wait_budget_seconds: float = CLIP_WAIT_BUDGET_SECONDS,
+    ) -> Dict[str, Any]:
+        """
+        Recorded clip of `duration_ms` from `timestamp_ms` (epoch ms, an event start), without audio.
+        Ring's docs describe two replies, so both are handled: 200 (full) / 206 (partial, X-Media-Length)
+        with the MP4 body, or a 301/302/303 redirect whose Location is fetched WITHOUT the access token.
+        416/425 are retried within `wait_budget_seconds`; 422 never; 500/503 once.
+
+        Returns {"status", "video", "partial", "media_length"}; `status` is "ok", "no_recent_media",
+        "not_ready", "media_undecryptable", "corrupt_recording", "time_range_not_authorized",
+        "clip_too_large" (over CLIP_MAX_BYTES) or "unreadable_clip" (not an MP4). The bytes stay in memory
+        here and are never logged. 401/403/406 and other HTTP errors raise the typed errors.
+        """
+        if not self._token:
+            raise RingNotConfiguredError(f"{TOKEN_ENV_VAR} is not set; Ring API is unavailable.")
+        body: Dict[str, Any] = {"timestamp": int(timestamp_ms), "duration": int(duration_ms),
+                                "audio_options": {"audio_enabled": False}}
+        if component_id:
+            body["components"] = [{"component_id": component_id}]
+        path = f"{self._device_path(device_id)}/media/video/download"
+
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            outcome = await self._media_post(session, path, body, True, wait_budget_seconds,
+                                             accept=(200, 206, *_REDIRECTS), max_bytes=CLIP_MAX_BYTES)
+            if outcome[0] == "redirect":
+                outcome = await self._get_presigned(session, outcome[1], CLIP_MAX_BYTES)
+        if outcome[0] == "failed":
+            cause = outcome[1]
+            return _clip_result({"too_large": "clip_too_large", "unreadable": "unreadable_clip"}.get(cause, cause))
+        _, data, headers, status = outcome
+        if not _is_mp4(data):
+            return _clip_result("unreadable_clip")
+        length = (headers.get("X-Media-Length") or "").strip()
+        return {"status": "ok", "video": data, "partial": status == 206,
+                "media_length": int(length) if length.isdigit() else None}
+
+    async def _media_post(self, session: aiohttp.ClientSession, path: str, body: Dict[str, Any],
+                          wait_on_416: bool, wait_budget_seconds: float,
+                          accept: tuple = (303,), max_bytes: int = 0) -> tuple:
+        """
+        POST of a media download. Returns ("redirect", absolute Location), ("body", bytes, headers, status)
+        for an accepted 200/206, or ("failed", cause) with a result status ("too_large" for an oversized
+        body). 425 (and 416 with `wait_on_416`) is retried within `wait_budget_seconds`; 500/503 once.
+        """
         waited = 0.0
         attempt = 0
         retried_server_error = False
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            while True:
-                try:
-                    async with session.post(f"{self.base_url}{path}", json=body, headers=self._headers(),
-                                            allow_redirects=False) as response:
-                        status = response.status
-                        text = await response.text()
-                        location = response.headers.get("Location")
-                        retry_after = parse_retry_after(response.headers.get("Retry-After"))
-                except asyncio.TimeoutError:
-                    raise RingTimeoutError(
-                        f"Ring API POST {path} timed out after {self.timeout_seconds}s") from None
-                except aiohttp.ClientError as exc:
-                    raise RingPartnerError(f"Ring API POST {path} connection error ({type(exc).__name__})") from None
+        while True:
+            try:
+                async with session.post(f"{self.base_url}{path}", json=body, headers=self._headers(),
+                                        allow_redirects=False) as response:
+                    status = response.status
+                    if status in accept and status in (200, 206):
+                        data = await self._read_limited(response, max_bytes)
+                        if data is None:
+                            return "failed", "too_large"
+                        return "body", data, response.headers, status
+                    text = await response.text()
+                    location = response.headers.get("Location")
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+            except asyncio.TimeoutError:
+                raise RingTimeoutError(
+                    f"Ring API POST {path} timed out after {self.timeout_seconds}s") from None
+            except aiohttp.ClientError as exc:
+                raise RingPartnerError(f"Ring API POST {path} connection error ({type(exc).__name__})") from None
 
-                if status == 303 and location:
-                    break
-                if status == 422:
-                    return _snapshot_result(classify_media_error(text))
-                if status == 425 or (status == 416 and wait_for_recording):
-                    attempt += 1
-                    delay = retry_after if retry_after is not None else TRANSIENT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
-                    if waited + delay > wait_budget_seconds:
-                        return _snapshot_result("not_ready" if status == 425 else "no_recent_media")
-                    waited += delay
-                    await self._sleep(delay)
-                    continue
-                if status == 416:
-                    return _snapshot_result("no_recent_media")
-                if status in (500, 503) and not retried_server_error and (
-                        retry_after is None or retry_after <= self.max_retry_after_seconds):
-                    retried_server_error = True
-                    await self._backoff(path, f"HTTP {status}", 1, retry_after)
-                    continue
-                if status == 303:
-                    raise RingPartnerError(f"Ring API POST {path} answered 303 without a Location", status=303)
-                error = self._error(status, text, path, retry_after, method="POST")
-                if isinstance(error, RingTimeRangeNotAuthorizedError):
-                    return _snapshot_result("time_range_not_authorized")
-                raise error
+            if status in accept and status in _REDIRECTS and location:
+                return "redirect", urljoin(f"{self.base_url}/", location)
+            if status == 422:
+                return "failed", classify_media_error(text)
+            if status == 425 or (status == 416 and wait_on_416):
+                attempt += 1
+                delay = retry_after if retry_after is not None else TRANSIENT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+                if waited + delay > wait_budget_seconds:
+                    return "failed", "not_ready" if status == 425 else "no_recent_media"
+                waited += delay
+                await self._sleep(delay)
+                continue
+            if status == 416:
+                return "failed", "no_recent_media"
+            if status in (500, 503) and not retried_server_error and (
+                    retry_after is None or retry_after <= self.max_retry_after_seconds):
+                retried_server_error = True
+                await self._backoff(path, f"HTTP {status}", 1, retry_after)
+                continue
+            if status in _REDIRECTS:
+                raise RingPartnerError(f"Ring API POST {path} answered {status} without a Location", status=status)
+            error = self._error(status, text, path, retry_after, method="POST")
+            if isinstance(error, RingTimeRangeNotAuthorizedError):
+                return "failed", "time_range_not_authorized"
+            raise error
 
-            return await self._fetch_presigned(session, urljoin(f"{self.base_url}/", location))
+    @staticmethod
+    async def _read_limited(response: aiohttp.ClientResponse, max_bytes: int) -> Optional[bytes]:
+        """The body, or None when Content-Length or the bytes read exceed `max_bytes`."""
+        declared = response.headers.get("Content-Length", "")
+        if declared.isdigit() and int(declared) > max_bytes:
+            return None
+        data = bytearray()
+        async for chunk in response.content.iter_chunked(65536):
+            data.extend(chunk)
+            if len(data) > max_bytes:
+                return None
+        return bytes(data)
 
-    async def _fetch_presigned(self, session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
-        """GET of the pre-signed media URL: no Authorization header (the token never goes there)."""
+    async def _get_presigned(self, session: aiohttp.ClientSession, url: str, max_bytes: int) -> tuple:
+        """
+        GET of a pre-signed media URL with no Authorization header (the token never goes there).
+        Returns ("body", bytes, headers, 200) or ("failed", cause); the caller maps the causes
+        "unreadable" and "too_large". The URL itself is never logged or returned.
+        """
         if urlsplit(url).scheme not in ("http", "https"):
-            return _snapshot_result("unreadable_image")
+            return "failed", "unreadable"
         try:
             async with session.get(url, headers={"User-Agent": USER_AGENT}, allow_redirects=False) as response:
                 if response.status != 200:
-                    # Small JSON:API error body only; the URL itself is never logged or returned.
+                    # Small JSON:API error body only.
                     body = (await response.content.read(SNAPSHOT_ERROR_MAX_BYTES)).decode("utf-8", "replace")
                     if response.status == 422:
-                        return _snapshot_result(classify_media_error(body))
-                    return _snapshot_result("no_recent_media" if response.status == 416 else "unreadable_image")
-                declared = response.headers.get("Content-Length", "")
-                if declared.isdigit() and int(declared) > SNAPSHOT_MAX_BYTES:
-                    return _snapshot_result("unreadable_image")
-                data = bytearray()
-                async for chunk in response.content.iter_chunked(65536):
-                    data.extend(chunk)
-                    if len(data) > SNAPSHOT_MAX_BYTES:
-                        return _snapshot_result("unreadable_image")
-                media_timestamp = response.headers.get("X-Media-Timestamp", "").strip()
-                media_origin = response.headers.get("X-Media-Origin")
+                        return "failed", classify_media_error(body)
+                    return "failed", "no_recent_media" if response.status == 416 else "unreadable"
+                data = await self._read_limited(response, max_bytes)
+                if data is None:
+                    return "failed", "too_large"
+                return "body", data, response.headers, 200
         except asyncio.TimeoutError:
             raise RingTimeoutError(f"Ring media download timed out after {self.timeout_seconds}s") from None
         except aiohttp.ClientError as exc:
             # The pre-signed URL is a credential too: it never appears in messages.
             raise RingPartnerError(f"Ring media download connection error ({type(exc).__name__})") from None
 
-        content_type = _image_type(bytes(data))
+    async def _fetch_presigned(self, session: aiohttp.ClientSession, url: str) -> Dict[str, Any]:
+        """Image from the pre-signed URL (see _get_presigned); oversized or undecodable bytes are unreadable."""
+        outcome = await self._get_presigned(session, url, SNAPSHOT_MAX_BYTES)
+        if outcome[0] == "failed":
+            return _snapshot_result("unreadable_image" if outcome[1] in ("unreadable", "too_large") else outcome[1])
+        _, data, headers, _status = outcome
+        content_type = _image_type(data)
         if content_type is None:
             return _snapshot_result("unreadable_image")
-        return {**_snapshot_result("ok"), "image": bytes(data), "content_type": content_type,
+        media_timestamp = headers.get("X-Media-Timestamp", "").strip()
+        media_origin = headers.get("X-Media-Origin")
+        return {**_snapshot_result("ok"), "image": data, "content_type": content_type,
                 "media_timestamp": int(media_timestamp) if media_timestamp.isdigit() else None,
                 "media_origin": media_origin if isinstance(media_origin, str) else None}
 

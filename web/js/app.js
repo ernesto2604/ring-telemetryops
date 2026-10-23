@@ -168,6 +168,8 @@ function applyPartnerModeUI() {
   if (onlineBadge) onlineBadge.style.display = '';
   const analyzeBtn = document.getElementById('btn-analyze-now');
   if (analyzeBtn) analyzeBtn.style.display = '';
+  const clipBtn = document.getElementById('btn-analyze-clip');
+  if (clipBtn) clipBtn.style.display = '';
   const modeLabel = document.getElementById('autonomous-mode-label');
   if (modeLabel) modeLabel.textContent = '● Manual analysis (Ring Partner API)';
   const sourceLabel = document.getElementById('telemetry-source-label');
@@ -675,6 +677,51 @@ async function runManualDiagnosis() {
     await triggerAutonomousDiagnosis('manual');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🩺 Analyze now'; }
+  }
+}
+
+/**
+ * "Recording stats (from Ring recording, not live network): 5.0 s · 15 fps · 1280x720 · 1.2 Mbps" plus the
+ * image verdict. These numbers describe the recording: they never fill the Wi-Fi, jitter or loss cards.
+ */
+function clipStatsText(data) {
+  const clip = data.clip || {};
+  if (clip.status !== 'ok') return `Recording stats: not available (${clip.reason || clip.status})`;
+  const image = (data.checked_domains || []).find(d => d.domain === 'image');
+  return `${clip.label}: ${Number(clip.duration_seconds).toFixed(1)} s · ${clip.fps} fps · ${clip.resolution}`
+    + ` · ${clip.bitrate_mbps} Mbps` + (image ? ` · Image: ${image.detail}` : '');
+}
+
+function showRingMediaStats(text) {
+  const line = document.getElementById('ring-media-stats');
+  if (!line) return;
+  line.textContent = text;
+  line.style.display = '';
+}
+
+/** "Analyze last recording (5 s)": separate from Analyze now, which it never slows down. */
+async function runClipAnalysis() {
+  const btn = document.getElementById('btn-analyze-clip');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing recording…'; }
+  try {
+    const r = await fetch('/api/ring/clip-analysis', { method: 'POST' });
+    if (!r.ok) {
+      const detail = await responseErrorDetail(r);
+      renderRingErrorHint(detail.reason);
+      showRingMediaStats(`Recording stats: not available (${detail.message})`);
+      return;
+    }
+    const data = await r.json();
+    showRingMediaStats(clipStatsText(data));
+    if (data.diagnostic_result) {
+      renderResult(data.diagnostic_result, data);
+      showReportProvider(data._provider || 'precheck');
+    }
+    loadFunnelMetrics();
+  } catch {
+    showRingMediaStats('Recording stats: not available (server unreachable)');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🎞️ Analyze last recording (5 s)'; }
   }
 }
 

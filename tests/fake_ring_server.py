@@ -5,13 +5,16 @@ thread, so it serves both asyncio tests and FastAPI's synchronous TestClient. No
 It implements, with fictitious data shaped like the documented JSON:API payloads:
   GET  /v1/devices, /v1/devices/{id}?include=..., /v1/devices/{id}/{status|capabilities}
   POST /v1/devices/{id}/media/image/download   -> scripted replies, default 303 + Location
-  GET  /media/presigned/{key}                  -> scripted replies, default the image (no Authorization expected)
+  POST /v1/devices/{id}/media/video/download   -> scripted clip replies, default 303 + Location
+  GET  /media/presigned/{key}                  -> scripted replies, default the image or, for clip-*, the clip
+                                                  (no Authorization expected)
   GET  /v1/history/devices/{id}/events         -> event pages linked by links.next
 
 Every request is recorded in `requests` (method, path, query, headers, json body).
 """
 import asyncio
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -20,6 +23,7 @@ from aiohttp import web
 
 DEVICE_ID = "ava1.ring.device.FAKE1"
 PRESIGNED_PATH = "/media/presigned/snap-1"
+CLIP_PRESIGNED_PATH = "/media/presigned/clip-1"
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +53,20 @@ def pink_frame() -> np.ndarray:
 
 def jpeg(frame: np.ndarray) -> bytes:
     return cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 92])[1].tobytes()
+
+
+def synthetic_mp4(directory, frame: Optional[np.ndarray] = None, fps: float = 15.0, frames: int = 75,
+                  size: tuple = (640, 360)) -> bytes:
+    """MP4 (mp4v) written with cv2.VideoWriter in `directory` (a pytest tmp dir); returns its bytes."""
+    path = str(Path(directory) / f"clip-{fps:g}-{frames}-{size[0]}x{size[1]}.mp4")
+    image = cv2.resize(sharp_frame() if frame is None else frame, size)
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+    try:
+        for i in range(frames):
+            writer.write(np.roll(image, i, axis=1))   # a little motion, same sharpness
+    finally:
+        writer.release()
+    return Path(path).read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +100,11 @@ class FakeRing:
         # Pre-signed GET replies in order: (status, json_body); the last one repeats. None -> the image.
         self.presigned_replies: List[Optional[tuple]] = [None]
         self.image_headers: Dict[str, str] = {"X-Media-Timestamp": "1761210000000", "X-Media-Origin": "recording"}
+        # Clip POST replies in order; the last one repeats. None -> 303 + Location of the clip;
+        # ("body", status, headers) -> the clip itself; ("redirect", status) -> that redirect;
+        # (status, headers, code) -> JSON:API error.
+        self.clip_replies: List[Optional[tuple]] = [None]
+        self.clip: bytes = b""
         # Event pages by page key ("" = first page); each is a list of history-events items.
         self.event_pages: Dict[str, List[Dict[str, Any]]] = {"": []}
         self.event_links: Dict[str, str] = {}      # page key -> next page key
@@ -118,6 +141,7 @@ class FakeRing:
         app.router.add_get("/v1/devices/{device_id}", self._device)
         app.router.add_get("/v1/devices/{device_id}/{kind}", self._resource)
         app.router.add_post("/v1/devices/{device_id}/media/image/download", self._snapshot)
+        app.router.add_post("/v1/devices/{device_id}/media/video/download", self._clip)
         app.router.add_get("/media/presigned/{key}", self._presigned)
         app.router.add_get("/v1/history/devices/{device_id}/events", self._events)
         self._runner = web.AppRunner(app)
@@ -169,11 +193,25 @@ class FakeRing:
         status, headers, code = reply
         return jsonapi_error(status, code=code, headers=headers)
 
-    async def _presigned(self, _request):
+    async def _clip(self, _request):
+        reply = self.clip_replies.pop(0) if len(self.clip_replies) > 1 else self.clip_replies[0]
+        if reply is None:
+            return web.Response(status=303, headers={"Location": CLIP_PRESIGNED_PATH})
+        if reply[0] == "body":
+            _, status, headers = reply
+            return web.Response(status=status, body=self.clip, content_type="video/mp4", headers=headers)
+        if reply[0] == "redirect":
+            return web.Response(status=reply[1], headers={"Location": CLIP_PRESIGNED_PATH})
+        status, headers, code = reply
+        return jsonapi_error(status, code=code, headers=headers)
+
+    async def _presigned(self, request):
         reply = self.presigned_replies.pop(0) if len(self.presigned_replies) > 1 else self.presigned_replies[0]
         if reply is not None:
             status, body = reply
             return web.json_response(body, status=status)
+        if request.match_info["key"].startswith("clip"):
+            return web.Response(body=self.clip, content_type="video/mp4")
         return web.Response(body=self.image, content_type="image/jpeg", headers=self.image_headers)
 
     async def _events(self, request):

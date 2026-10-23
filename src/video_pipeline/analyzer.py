@@ -79,6 +79,65 @@ def sharpness_score(gray: np.ndarray) -> float:
     return round(float(cv2.Laplacian(gray, cv2.CV_64F).var()), 2)
 
 
+CLIP_FRAMES_CHECKED = 3
+CLIP_BLACK_BRIGHTNESS = 4.0   # same black-frame limit as analyze_frame_base64
+
+
+def analyze_clip(data: bytes) -> dict:
+    """
+    Recording stats of a Ring MP4 clip and its CLIP_FRAMES_CHECKED best frames (sharpest non-black, measured
+    without the watermark band) as in-memory JPEGs, best first. OpenCV cannot read an MP4 from memory, so the
+    bytes go to a temporary file in the system temp directory (owner-only permissions where the OS supports
+    them); it is deleted in `finally`, also when decoding fails, and its path is never logged.
+    Raises ValueError when the clip cannot be decoded.
+    """
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp(prefix="ring-clip-", suffix=".mp4")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        cap = cv2.VideoCapture(path)
+        try:
+            if not cap.isOpened():
+                raise ValueError("Could not open the Ring clip")
+            nominal_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            declared_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            frames_read, width, height, candidates = 0, 0, 0, []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames_read += 1
+                height, width = frame.shape[:2]
+                gray = cv2.cvtColor(crop_ring_watermark(frame), cv2.COLOR_BGR2GRAY)
+                if float(np.mean(gray)) >= CLIP_BLACK_BRIGHTNESS:
+                    candidates.append((sharpness_score(gray), frames_read, frame))
+                    candidates = sorted(candidates, key=lambda c: c[0], reverse=True)[:CLIP_FRAMES_CHECKED]
+        finally:
+            cap.release()
+    finally:
+        os.unlink(path)
+    if frames_read == 0 or nominal_fps <= 0:
+        raise ValueError("The Ring clip has no decodable frames")
+    # Duration from the container's frame count; effective fps = frames actually decoded over that duration.
+    duration = (declared_frames if declared_frames > 0 else frames_read) / nominal_fps
+    if not candidates:   # every frame black: check them anyway, the image check reports it
+        candidates = [(0.0, 0, np.zeros((height, width, 3), np.uint8))]
+    frames = [cv2.imencode(".jpg", c[2], [int(cv2.IMWRITE_JPEG_QUALITY), 92])[1].tobytes() for c in candidates]
+    return {
+        "duration_seconds": round(duration, 2),
+        "fps": round(frames_read / duration, 2),
+        "frame_count": frames_read,
+        "width": width,
+        "height": height,
+        "resolution": f"{width}x{height}",
+        "bitrate_mbps": round(len(data) * 8 / duration / 1e6, 2),
+        "frames": frames,
+    }
+
+
 class VideoAnalyzer:
     def __init__(self, video_path: str, crop_watermark: bool = False):
         """`crop_watermark`: measure Ring media without the watermark band (off for the simulator and samples)."""

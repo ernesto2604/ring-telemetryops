@@ -296,6 +296,7 @@ test('Partner setup uses the configured poll interval and disables simulated con
   }
   assert.equal(page.el('badge-online').style.display, '');
   assert.equal(page.el('btn-analyze-now').style.display, '');
+  assert.equal(page.el('btn-analyze-clip').style.display, '');
 });
 
 test('Simulator keeps its 15 s heartbeat and enabled controls', async () => {
@@ -2062,4 +2063,49 @@ test('T39: a report without report_id hides the feedback prompt', () => {
   const page = loadPage();
   page.run(`renderResult(${JSON.stringify(RATED_REPORT.diagnostic_result)}, {})`);
   assert.equal(page.el('feedback-box').style.display, 'none');
+});
+
+// ---------------------------------------------------------------------------
+// T43: "Analyze last recording (5 s)": recording stats, never live network values
+// ---------------------------------------------------------------------------
+
+const CLIP_REPORT = {
+  _provider: 'precheck',
+  diagnostic_result: { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'NONE', confidence_score: 1,
+                       telemetry_findings: [], visual_findings: [], recommended_mitigation: 'Check Device Health.' },
+  checked_domains: [{ domain: 'image', status: 'ok', detail: 'Ring snapshot checked: no image issue detected' }],
+  clip: { status: 'ok', label: 'Recording stats (from Ring recording, not live network)', duration_seconds: 5,
+          fps: 15, resolution: '1280x720', bitrate_mbps: 1.2, frames_checked: 3 },
+};
+
+test('T43: a clip shows recording stats and the image verdict, and leaves the network cards alone', async () => {
+  const page = loadPage({ '/api/ring/clip-analysis': { status: 200, body: CLIP_REPORT },
+                          '/api/metrics': { status: 404, body: {} } });
+  page.run("state.ringSource = 'partner';");
+  page.el('m-jitter').textContent = 'N/D';
+
+  await page.run('runClipAnalysis()');
+
+  assert.equal(page.el('ring-media-stats').textContent,
+    'Recording stats (from Ring recording, not live network): 5.0 s · 15 fps · 1280x720 · 1.2 Mbps'
+    + ' · Image: Ring snapshot checked: no image issue detected');
+  assert.equal(page.el('m-jitter').textContent, 'N/D');
+  assert.ok(page.requests.some(r => r.url === '/api/ring/clip-analysis'));
+  assert.equal(page.el('btn-analyze-clip').disabled, false);
+});
+
+test('T43: a clip Ring could not provide says why', async () => {
+  const page = loadPage({ '/api/ring/clip-analysis': { status: 200, body: {
+    clip: { status: 'not_ready', reason: "Ring's recording was not ready in time: no clip was analyzed" } } } });
+  await page.run('runClipAnalysis()');
+  assert.equal(page.el('ring-media-stats').textContent,
+    "Recording stats: not available (Ring's recording was not ready in time: no clip was analyzed)");
+});
+
+test('T43: a credential error on the clip shows its hint', async () => {
+  const page = loadPage({ '/api/ring/clip-analysis': { status: 502, body: {
+    detail: { message: 'HTTP 401', reason: 'token_rejected' } } } });
+  await page.run('runClipAnalysis()');
+  assert.equal(page.el('partner-error-hint').textContent, RING_REASON_HINTS.token_rejected);
+  assert.equal(page.el('ring-media-stats').textContent, 'Recording stats: not available (HTTP 401)');
 });

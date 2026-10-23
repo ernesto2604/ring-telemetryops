@@ -15,6 +15,7 @@ Endpoints:
   GET  /api/ring/telemetry      → Ring Partner API device status as telemetry (no video / WebRTC data)
   GET  /api/ring/snapshot       → Last Ring snapshot from memory (Partner mode, Cache-Control: no-store)
   GET  /api/ring/events         → Recent Ring Event History events and reports of new events with a problem
+  POST /api/ring/clip-analysis  → Recording stats and image check of a 5 s Ring clip at the newest event
   POST /api/ring/whep-session   → Simulated WHEP answer for the Digital Twin (501 in Partner mode)
   POST /api/telemetry           → Generates telemetry payload (custom sliders or presets)
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
@@ -25,6 +26,7 @@ Endpoints:
   POST /webhooks/ring           → Signed Ring webhooks (HMAC-SHA256, Partner mode only; 200 at once, processed after)
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -79,7 +81,7 @@ from src.utils.ring_partner_client import (
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
 from src.agent.concierge import SupportConcierge, bedrock_credentials_configured
-from src.video_pipeline.analyzer import STREAM_ISSUE_PREFIXES
+from src.video_pipeline.analyzer import STREAM_ISSUE_PREFIXES, VideoAnalyzer, analyze_clip
 from src.config import severity
 from src.api.funnel import funnel
 
@@ -755,6 +757,75 @@ async def get_ring_snapshot():
     if _latest_snapshot["media_origin"]:
         headers["X-Media-Origin"] = _latest_snapshot["media_origin"]
     return Response(content=_latest_snapshot["image"], media_type=_latest_snapshot["content_type"], headers=headers)
+
+
+# "Analyze last recording": a 5 s clip at the newest event. Its numbers describe the recording, never the
+# live network, so they are not shown as Wi-Fi, jitter or packet-loss values.
+RECORDING_STATS_LABEL = "Recording stats (from Ring recording, not live network)"
+CLIP_REASONS = {
+    **SNAPSHOT_REASONS,
+    "not_ready": "Ring's recording was not ready in time: no clip was analyzed",
+    "no_recent_media": "Ring has no recording at the newest event's time, so no clip was analyzed.",
+    "clip_too_large": "Ring's recording was larger than this app accepts (20 MB), so it was not analyzed.",
+    "unreadable_clip": "Ring returned a recording this app could not read, so it could not be checked.",
+    "no_event": "No recent Ring event: a recording clip is requested at an event's start time.",
+}
+
+
+def _clip_failure(status: str, reason: str) -> Dict[str, Any]:
+    funnel.record_clip(status)
+    return {"source": "ring_partner_api", "clip": {"status": status, "reason": reason}}
+
+
+def _clip_frame(frames: list) -> str:
+    """Base64 of the first checked frame with an image issue (watermark cropped), else the sharpest one."""
+    encoded = [base64.b64encode(f).decode("ascii") for f in frames]
+    for frame in encoded:
+        metrics, _ = VideoAnalyzer.analyze_frame_base64(frame, crop_watermark=True)
+        if any(not i.startswith(STREAM_ISSUE_PREFIXES) for i in metrics["issues"]):
+            return frame
+    return encoded[0]
+
+
+@app.post("/api/ring/clip-analysis")
+async def ring_clip_analysis(device_id: Optional[str] = None):
+    """
+    Downloads 5 s of the newest event's recording (Ring media clip), measures it (duration, effective fps,
+    resolution, approximate bitrate) and checks its best frames like a snapshot: a healthy image stays on
+    the server, an anomaly gets the same report. Ring's failures are explained in `clip.reason`.
+    """
+    client = _require_partner()
+    telemetry = await _partner_telemetry(device_id)
+    if (telemetry.get("device_context") or {}).get("media_readable") is False:
+        return {"source": "ring_partner_api", "clip": {"status": "media_encrypted", "reason": E2E_ENCRYPTED_REASON}}
+    starts = await _recent_event_starts(telemetry["device_id"])
+    if not starts:
+        return _clip_failure("no_event", CLIP_REASONS["no_event"])
+    try:
+        result = await client.download_clip(telemetry["device_id"], starts[0],
+                                            component_id=first_component_id(telemetry.get("capabilities")))
+    except (RingUnauthorizedError, RingForbiddenError, RingBlockedError, RingNotConfiguredError) as exc:
+        raise _partner_http_error(exc) from None
+    except RingPartnerError as exc:
+        return _clip_failure("error", f"Ring could not provide the recording ({_partner_error_reason(exc)})")
+    if result["status"] != "ok":
+        return _clip_failure(result["status"], CLIP_REASONS[result["status"]])
+    try:
+        stats = await asyncio.to_thread(analyze_clip, result["video"])
+    except ValueError:
+        return _clip_failure("unreadable_clip", CLIP_REASONS["unreadable_clip"])
+    except Exception as exc:
+        funnel.record_clip("error")
+        logger.warning("Ring clip analysis failed (%s)", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Internal error while analyzing the recording.") from None
+    funnel.record_clip("ok")
+    frames = stats.pop("frames")
+    meta = {"device_id": telemetry["device_id"], "media_timestamp": starts[0], "media_origin": "recording_clip",
+            "content_type": "image/jpeg"}
+    report = _run_partner_concierge(telemetry, _clip_frame(frames), None, meta)
+    report["clip"] = {"status": "ok", "label": RECORDING_STATS_LABEL, **stats, "partial": result["partial"],
+                      "frames_checked": len(frames)}
+    return report
 
 
 # Event History polling (webhooks are not implemented). In memory: the last 20 events, the IDs
