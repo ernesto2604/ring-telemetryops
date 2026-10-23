@@ -407,7 +407,7 @@ async function pollPartnerEvents() {
     if (report.snapshot) showPartnerSnapshot(report.snapshot);
     renderResult(diag, report);
     showReportProvider(report._provider);
-    showAppPushNotification(diag, 'event_session', report.trigger);
+    showAppPushNotification(diag, 'event_session', report.trigger, report.checked_domains);
     setResolvedNote(false);
   }
 }
@@ -609,7 +609,7 @@ async function triggerAutonomousDiagnosis(triggerOrigin, extraContext = '') {
     // One push notification per incident: a repeat of the alert already shown only updates the report.
     const repeat = state.activeAlert && incidentAnomaly && state.heartbeatAlertActive
       && state.activeAlert.domain === diag.root_cause_domain && state.activeAlert.status === diag.diagnostic_status;
-    if (!repeat) showAppPushNotification(diag, triggerOrigin, extraContext);
+    if (!repeat) showAppPushNotification(diag, triggerOrigin, extraContext, data.checked_domains);
 
     // A new report is current, not resolved. It is resolved by the heartbeat only when it belongs to the
     // open telemetry incident (every metric back to GREEN); an optical-only event report stays as is.
@@ -635,6 +635,11 @@ function showPartnerSnapshot(meta) {
   }
   const standby = document.getElementById('camera-standby-screen');
   if (standby) standby.style.display = 'none';
+  // A still image has no stream, signal or frame rate: hide the live HUD texts (they stay without a snapshot).
+  for (const id of ['hud-cam-meta', 'signal-quality-pill', 'hud-fps-live']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
   const when = Number.isFinite(meta.media_timestamp)
     ? new Date(meta.media_timestamp).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'time N/D';
   const label = document.getElementById('monitor-source-label');
@@ -695,7 +700,7 @@ function showAnalyzingIndicator(active) {
  * mitigation lives in the report card below, so the banner never repeats it (no duplicate text).
  * Titles quote the severity table's boundaries (limitText), never hard-coded numbers.
  */
-function showAppPushNotification(diag, origin, extraContext) {
+function showAppPushNotification(diag, origin, extraContext, checkedDomains) {
   const banner = document.getElementById('app-push-banner');
   const titleEl = document.getElementById('app-push-title');
   const descEl = document.getElementById('app-push-desc');
@@ -706,7 +711,7 @@ function showAppPushNotification(diag, origin, extraContext) {
   const status = diag.diagnostic_status || 'DEGRADED';
   banner.className = 'app-push-banner show ' + (status === 'CRITICAL' ? '' : 'warning');
   iconEl.textContent = status === 'CRITICAL' ? '🚨' : status === 'INSUFFICIENT_DATA' ? '❔' : '⚠️';
-  titleEl.textContent = alertTitle(diag, origin, extraContext);
+  titleEl.textContent = alertTitle(diag, origin, extraContext, checkedDomains);
   descEl.textContent = status === 'INSUFFICIENT_DATA'
     ? 'Some essential metrics were not measured. See the report below.'
     : `${domainLabel(diag.root_cause_domain)}: see the report below for what to do.`;
@@ -726,8 +731,28 @@ function showAppPushNotification(diag, origin, extraContext) {
 
 const TRIGGER_NAMES = { ding: 'Doorbell Press', motion: 'Motion Detection', live: 'Live View' };
 
-function alertTitle(diag, origin, extraContext) {
+const CHECKED_DOMAIN_NAMES = { image: 'image', network: 'Wi-Fi', power: 'power' };
+
+/** Partner (checked_domains) customer label for INSUFFICIENT_DATA; null for the simulator or other levels. */
+function partnerCheckLabel(status, domains) {
+  if (!Array.isArray(domains) || status !== 'INSUFFICIENT_DATA') return null;
+  return domains.some(d => d.status !== 'not_available') ? 'Partial check' : 'Not enough data';
+}
+
+/** "Ring: Partial check (image OK; Wi-Fi and power are not shared by Ring)". */
+function partialCheckTitle(domains) {
+  const name = d => CHECKED_DOMAIN_NAMES[d.domain] || d.domain;
+  const checked = domains.filter(d => d.status !== 'not_available')
+    .map(d => `${name(d)} ${d.status === 'ok' ? 'OK' : d.status}`);
+  const missing = domains.filter(d => d.status === 'not_available').map(name);
+  const notShared = missing.length
+    ? `; ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not shared by Ring` : '';
+  return `Ring: Partial check (${checked.join(', ')}${notShared})`;
+}
+
+function alertTitle(diag, origin, extraContext, checkedDomains) {
   const status = diag.diagnostic_status || 'DEGRADED';
+  if (partnerCheckLabel(status, checkedDomains) === 'Partial check') return partialCheckTitle(checkedDomains);
   if (status === 'INSUFFICIENT_DATA') return 'Ring: Not enough data to diagnose this device';
   if (origin === 'manual') return `Ring diagnosis: ${status}`;
   if (origin === 'event_session') return `Ring Alert: Issue during ${TRIGGER_NAMES[extraContext] || 'Streaming'}`;
@@ -790,9 +815,7 @@ function renderResult(diag, data = {}) {
   if (bar) bar.className = 'diagnostic-status ' + status;
   document.getElementById('diag-icon').textContent        = icons[status] || '❓';
   // Partner (checked_domains): customer wording for INSUFFICIENT_DATA; the technical value stays in Technical details.
-  const domains = Array.isArray(data.checked_domains) ? data.checked_domains : null;
-  const partialLabel = domains && status === 'INSUFFICIENT_DATA'
-    ? (domains.some(d => d.status !== 'not_available') ? 'Partial check' : 'Not enough data') : null;
+  const partialLabel = partnerCheckLabel(status, data.checked_domains);
   document.getElementById('diag-status-text').textContent = healthy ? 'Healthy' : partialLabel || status;
   document.getElementById('diag-domain-text').textContent = healthy ? 'No issues detected' : domainLabel(domain);
 

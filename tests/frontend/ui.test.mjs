@@ -1888,3 +1888,54 @@ test('T29: simulator reports keep INSUFFICIENT_DATA as the label', () => {
   page.run(`renderResult(${JSON.stringify(diag)}, {})`);
   assert.equal(page.el('diag-status-text').textContent, 'INSUFFICIENT_DATA');
 });
+
+// ---------------------------------------------------------------------------
+// T33: Partner push title follows "Partial check"; a snapshot hides the live HUD texts
+// ---------------------------------------------------------------------------
+
+const PARTNER_REPORT = image => ({
+  analysis_skipped: false,
+  snapshot: { media_timestamp: 1761210000000, media_origin: 'recording' },
+  checked_domains: PARTNER_DOMAINS(image),
+  diagnostic_result: { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'UNKNOWN', confidence_score: 0 },
+});
+
+for (const [image, title] of [
+  ['ok', 'Ring: Partial check (image OK; Wi-Fi and power are not shared by Ring)'],
+  ['not_available', 'Ring: Not enough data to diagnose this device'],
+]) {
+  test(`T33: Partner image ${image} -> push title "${title}"`, async () => {
+    const page = loadPage({ '/api/analyze': { status: 200, body: PARTNER_REPORT(image) } });
+    page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+    await page.run('runManualDiagnosis()');
+    assert.equal(page.el('app-push-title').textContent, title);
+  });
+}
+
+test('T33: an event report with "Partial check" gets the same push title', async () => {
+  const page = loadPage({ '/api/ring/events': { status: 200, body: { events: [], reports: [PARTNER_REPORT('ok')] } } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  await page.run('pollPartnerEvents()');
+  assert.equal(page.el('app-push-title').textContent, 'Ring: Partial check (image OK; Wi-Fi and power are not shared by Ring)');
+});
+
+test('T33: a Partner snapshot hides the standby, signal and FPS overlays', async () => {
+  const page = loadPage({ '/api/analyze': { status: 200, body: PARTNER_REPORT('ok') } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI(); updateCanvasEffects();");
+  assert.equal(page.el('signal-quality-pill').textContent, '📡 Signal N/D');
+  await page.run('runManualDiagnosis()');
+  for (const id of ['hud-cam-meta', 'signal-quality-pill', 'hud-fps-live']) {
+    assert.equal(page.el(id).style.display, 'none', id);
+  }
+});
+
+test('T33: without a snapshot the overlays stay visible', async () => {
+  const page = loadPage({ '/api/analyze': { status: 200, body: { analysis_skipped: true } } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI(); updateCanvasEffects(); updateCameraStateControls();");
+  await page.run('runManualDiagnosis()');
+  assert.match(page.el('hud-cam-meta').textContent, /standby/i);
+  assert.equal(page.el('signal-quality-pill').textContent, '📡 Signal N/D');
+  for (const id of ['hud-cam-meta', 'signal-quality-pill', 'hud-fps-live']) {
+    assert.notEqual(page.el(id).style.display, 'none', id);
+  }
+});
