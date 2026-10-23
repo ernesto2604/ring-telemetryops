@@ -745,6 +745,14 @@ function renderResult(diag, data = {}) {
     const el = document.getElementById(id);
     if (el) el.textContent = text;
   });
+  // Partner reports only: the settings Ring reported for the device.
+  const settings = data.telemetry && data.telemetry.device_context;
+  ['tech-device-settings-label', 'tech-device-settings'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = settings ? '' : 'none';
+  });
+  const settingsEl = document.getElementById('tech-device-settings');
+  if (settingsEl) settingsEl.textContent = settings ? deviceSettingsText(settings) : '—';
   state.lastReport = { diag, data };
 
   const resCont = document.getElementById('result-content');
@@ -783,6 +791,8 @@ function ticketText() {
     `Severity level: ${line('tech-level')}`,
     `KB articles: ${line('tech-sops')} | Mitigation source: ${line('tech-mitigation-source')}`,
     `Device ID: ${line('tech-device-id')}`,
+    ...(data.telemetry && data.telemetry.device_context
+      ? [`Device settings (from Ring): ${line('tech-device-settings')}`] : []),
     'Telemetry findings:', ...(diag.telemetry_findings || []).map(f => `- ${f}`),
     'Visual findings:', ...(diag.visual_findings || []).map(f => `- ${f}`),
     `Recommended mitigation: ${diag.recommended_mitigation || '—'}`,

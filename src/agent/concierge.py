@@ -533,6 +533,38 @@ def _kb_for_prompt(articles: list[Dict[str, Any]], video_metrics: Dict[str, Any]
     return "\n\n".join(blocks)
 
 
+def _device_settings_section(context: Any) -> str:
+    """Partner only: Ring-reported settings as prompt context (no IDs); '' when there are none."""
+    if not isinstance(context, dict):
+        return ""
+
+    def val(value: Any) -> str:
+        if value is None:
+            return "not reported"
+        return {True: "on", False: "off"}.get(value, str(value)) if isinstance(value, bool) else str(value)
+
+    enh = context.get("image_enhancements") or {}
+    motion = context.get("motion_detection") or {}
+    video = context.get("video") or {}
+    location = context.get("location") or {}
+    snooze = context.get("snooze") or {}
+    rows = [
+        f"- End-to-end encryption: {val(context.get('e2e_encryption_enabled'))}",
+        f"- Color night vision   : {val(enh.get('color_night_vision'))}",
+        f"- IR LED night vision  : {val(enh.get('ir_led_night_vision'))}",
+        f"- HDR                  : {val(enh.get('hdr'))}",
+        f"- Auto zoom/track      : {val(enh.get('auto_zoom_track'))}",
+        f"- Privacy zones        : {val(enh.get('privacy_zones'))}",
+        f"- Motion detection     : {val(motion.get('enabled'))} (zones: {val(motion.get('zones'))})",
+        f"- Video max resolution : {val(video.get('max_resolution'))}",
+        f"- Location             : {val(location.get('country'))} / {val(location.get('state'))}",
+        f"- Audio snooze         : {val(snooze.get('active'))} (until {val(snooze.get('until'))})",
+    ]
+    header = ("=== DEVICE SETTINGS REPORTED BY RING (context for reading the image; not faults, "
+              "not a severity input) ===")
+    return "\n\n" + "\n".join([header, *rows])
+
+
 def _sharpness_line(score: Any) -> str:
     """The sharpness score with the analyzer's verdict, so the model never re-interprets it (C10)."""
     if not isinstance(score, (int, float)):
@@ -1134,7 +1166,7 @@ class SupportConcierge:
 - Battery saver  : {show(dh.get('battery_saver_low_voltage'), 'device_health', 'battery_saver_low_voltage')}
 - LED status     : {show(dh.get('led_status'), 'device_health', 'led_status')}
 - Transformer    : {trans_str}
-- Firmware       : {show(dh.get('firmware'), 'device_health', 'firmware')}
+- Firmware       : {show(dh.get('firmware'), 'device_health', 'firmware')}{_device_settings_section(telemetry.get('device_context'))}
 
 === TRANSPORT METRICS (WebRTC getStats schema; same source as above) ===
 - Jitter         : {show(metrics['jitter_ms'], 'webrtc_stats', 'jitter', ' ms', '.1f')}

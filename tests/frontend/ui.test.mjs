@@ -1672,3 +1672,49 @@ test('T21: simulator mode never shows a Ring error hint', async () => {
   assert.notEqual(page.el('partner-error-hint').style.display, '');
   assert.equal(page.el('server-status').textContent, 'Digital Twin active');
 });
+
+// ---------------------------------------------------------------------------
+// T22: Ring-reported device settings on the Partner card and in Technical details
+// ---------------------------------------------------------------------------
+
+const RING_DEVICE_CONTEXT = {
+  e2e_encryption_enabled: false,
+  motion_detection: { enabled: true, zones: 1 },
+  image_enhancements: { color_night_vision: false, hdr: false, ir_led_night_vision: false,
+    auto_zoom_track: true, privacy_zones: 0 },
+  video: { max_resolution: 1080, supported_resolutions: [1080] },
+  location: { country: 'US', state: null },
+  snooze: { active: null, until: null },
+};
+const SETTINGS_LINE = 'Ring settings: night vision color off · IR LED off · HDR off · privacy zones 0 · motion on (1 zone)';
+
+test('T22: Partner card shows the Ring settings line; missing values are N/D', () => {
+  const page = loadPage();
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+
+  page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: RING_DEVICE_CONTEXT })})`);
+  assert.equal(page.el('partner-settings').textContent, SETTINGS_LINE);
+
+  const partial = { motion_detection: { enabled: null, zones: null }, image_enhancements: { hdr: true } };
+  page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: partial })})`);
+  assert.equal(page.el('partner-settings').textContent,
+    'Ring settings: night vision color N/D · IR LED N/D · HDR on · privacy zones N/D · motion N/D');
+
+  page.run(`updateMetricCards(${JSON.stringify(NULL_PARTNER_TELEMETRY)})`);
+  assert.equal(page.el('partner-settings').textContent, 'Ring settings N/D');
+});
+
+test('T22: Technical details list Device settings (from Ring) only for Partner reports', () => {
+  const page = loadPage();
+  const diag = { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'NONE', confidence_score: 0.5 };
+
+  page.run(`renderResult(${JSON.stringify(diag)}, ${JSON.stringify({
+    telemetry: { _source: 'ring_partner_api', device_context: RING_DEVICE_CONTEXT } })})`);
+  assert.equal(page.el('tech-device-settings').style.display, '');
+  assert.equal(page.el('tech-device-settings').textContent, SETTINGS_LINE);
+  assert.ok(page.run('ticketText()').includes(`Device settings (from Ring): ${SETTINGS_LINE}`));
+
+  page.run(`renderResult(${JSON.stringify(diag)}, ${JSON.stringify({ telemetry: { _source: 'mock' } })})`);
+  assert.equal(page.el('tech-device-settings').style.display, 'none');
+  assert.ok(!page.run('ticketText()').includes('Device settings'));
+});

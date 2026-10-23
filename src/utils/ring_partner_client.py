@@ -6,6 +6,9 @@ Read-only client for the official Ring API (JSON:API over HTTPS).
 Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation.html
 (not re-verified against that page for this release):
   GET /v1/devices                            Device Discovery
+  GET /v1/devices/{device_id}?include=status,capabilities,configurations,location
+                                             One device with its related resources (JSON:API
+                                             `included`); individual calls below are the fallback
   GET /v1/devices/{device_id}/status         Device Status
   GET /v1/devices/{device_id}/capabilities   Device Capabilities
 
@@ -272,6 +275,83 @@ def normalize_device(
     }
 
 
+DEVICE_INCLUDE = "status,capabilities,configurations,location"
+
+# shortcut: included resources are matched by a keyword in their JSON:API `type` (the docs show no
+# example type names); match on `relationships` instead if Ring's types turn out ambiguous.
+_INCLUDED_KINDS = (("status", "status"), ("capabilit", "capabilities"),
+                   ("configuration", "configurations"), ("location", "location"))
+
+
+def _included_by_kind(document: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Maps the `included` array of a single-device document to status/capabilities/configurations/location."""
+    found: Dict[str, Dict[str, Any]] = {}
+    included = document.get("included")
+    for resource in included if isinstance(included, list) else []:
+        res_type = resource.get("type") if isinstance(resource, dict) else None
+        if not isinstance(res_type, str):
+            continue
+        for keyword, kind in _INCLUDED_KINDS:
+            if keyword in res_type.lower():
+                found.setdefault(kind, resource)
+                break
+    return found
+
+
+def _on_off(value: Any) -> Optional[bool]:
+    """Ring reports these settings as the strings "on"/"off"; anything else is unknown."""
+    return {"on": True, "off": False}.get(value) if isinstance(value, str) else None
+
+
+def _sub(attrs: Optional[Dict[str, Any]], key: str) -> Dict[str, Any]:
+    value = (attrs or {}).get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _count(value: Any) -> Optional[int]:
+    return len(value) if isinstance(value, list) else None
+
+
+def build_device_context(
+    status_attrs: Optional[Dict[str, Any]],
+    capability_attrs: Optional[Dict[str, Any]],
+    config_attrs: Optional[Dict[str, Any]],
+    location_attrs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Device settings exactly as Ring reports them; anything missing or malformed is None."""
+    e2e = _sub(config_attrs, "e2e_encryption").get("enabled")
+    motion = _sub(config_attrs, "motion_detection")
+    enhancements = _sub(config_attrs, "image_enhancements")
+    video = _sub(capability_attrs, "video")
+    snooze = _sub(_sub(status_attrs, "audio"), "snooze")
+    location = location_attrs or {}
+    resolutions = video.get("supported_resolutions")
+    text = lambda v: v if isinstance(v, str) else None  # noqa: E731
+    return {
+        "e2e_encryption_enabled": e2e if isinstance(e2e, bool) else None,
+        "motion_detection": {
+            "enabled": _on_off(motion.get("enabled")),
+            "zones": _count(motion.get("motion_zones")),
+        },
+        "image_enhancements": {
+            "color_night_vision": _on_off(enhancements.get("color_night_vision")),
+            "hdr": _on_off(enhancements.get("hdr")),
+            "ir_led_night_vision": _on_off(enhancements.get("ir_led_night_vision")),
+            "auto_zoom_track": _on_off(enhancements.get("auto_zoom_track")),
+            "privacy_zones": _count(enhancements.get("privacy_zones")),
+        },
+        "video": {
+            "max_resolution": video.get("max_resolution"),
+            "supported_resolutions": resolutions if isinstance(resolutions, list) else None,
+        },
+        "location": {"country": text(location.get("country")), "state": text(location.get("state"))},
+        "snooze": {
+            "active": snooze.get("active") if isinstance(snooze.get("active"), bool) else None,
+            "until": text(snooze.get("until")),
+        },
+    }
+
+
 def _fetch_error(exc: Exception) -> Dict[str, Any]:
     """Serializable record of a failed per-device request (messages are already token-redacted)."""
     return {
@@ -336,7 +416,9 @@ class RingPartnerClient:
 
     async def list_devices(self) -> List[Dict[str, Any]]:
         """
-        Device Discovery, then status and capabilities per device.
+        Device Discovery, then one GET /v1/devices/{id}?include=... per device for status,
+        capabilities, configurations and location. If that call fails or its `included` lacks
+        status or capabilities, those come from the individual endpoints (previous behaviour).
 
         Discovery failures raise. Per-device failures do not: that device keeps
         unknown (None) health/capabilities and lists the failure in `fetch_errors`.
@@ -358,15 +440,28 @@ class RingPartnerClient:
                 path = f"{self._device_path(device_id)}/{kind}"
                 return self._single_resource(await self._get_json(path), path)
 
+        async def fetch_included(device_id: Any) -> Dict[str, Dict[str, Any]]:
+            try:
+                async with semaphore:
+                    path = self._device_path(device_id)
+                    return _included_by_kind(await self._get_json(path, params={"include": DEVICE_INCLUDE}))
+            except RingUnauthorizedError:
+                raise
+            except (RingPartnerError, ValueError):
+                return {}  # fall back to the individual calls
+
         async def collect(resource: Dict[str, Any]) -> Dict[str, Any]:
+            included = await fetch_included(resource.get("id"))
+            kinds = [kind for kind in ("status", "capabilities") if kind not in included]
             results = await asyncio.gather(
-                fetch(resource.get("id"), "status"),
-                fetch(resource.get("id"), "capabilities"),
+                *(fetch(resource.get("id"), kind) for kind in kinds),
                 return_exceptions=True,
             )
-            found: Dict[str, Optional[Dict[str, Any]]] = {}
+            found: Dict[str, Optional[Dict[str, Any]]] = {
+                kind: included[kind] for kind in ("status", "capabilities") if kind in included
+            }
             errors: Dict[str, Dict[str, Any]] = {}
-            for kind, result in zip(("status", "capabilities"), results):
+            for kind, result in zip(kinds, results):
                 if isinstance(result, RingUnauthorizedError):
                     raise result
                 if isinstance(result, (RingPartnerError, ValueError)):
@@ -383,6 +478,12 @@ class RingPartnerClient:
                 if states["battery_percentage"] == "not_reported":
                     states["battery_percentage"] = "fetch_failed"
             device["fetch_errors"] = errors
+            device["device_context"] = build_device_context(
+                _attributes(found["status"]) if found["status"] else None,
+                device["capabilities"],
+                _attributes(included["configurations"]) if "configurations" in included else None,
+                _attributes(included["location"]) if "location" in included else None,
+            )
             return device
 
         return list(await asyncio.gather(*(collect(res) for res in resources)))

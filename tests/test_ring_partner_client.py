@@ -148,8 +148,9 @@ def test_discovery_sends_bearer_without_include_and_normalizes_devices():
     discovery = next(r for r in requests if r.path == "/v1/devices")
     assert "include" not in discovery.query
     assert all(r.headers["Authorization"] == f"Bearer {FAKE_TOKEN}" for r in requests)
+    # The combined ?include= call has no route here (404), so the individual calls are the fallback.
     assert {r.path for r in requests} == {
-        "/v1/devices",
+        "/v1/devices", f"/v1/devices/{ONLINE_ID}", f"/v1/devices/{OFFLINE_ID}",
         f"/v1/devices/{ONLINE_ID}/status", f"/v1/devices/{ONLINE_ID}/capabilities",
         f"/v1/devices/{OFFLINE_ID}/status", f"/v1/devices/{OFFLINE_ID}/capabilities",
     }

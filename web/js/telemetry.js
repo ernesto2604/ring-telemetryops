@@ -440,6 +440,23 @@ function capabilitiesText(caps) {
     + (unsupported.length ? ` · Not supported: ${unsupported.join(', ')}` : '');
 }
 
+function onOffText(v) {
+  return v === true ? 'on' : v === false ? 'off' : METRIC_NOT_AVAILABLE;
+}
+
+/** Ring-reported settings in one line (Partner only); N/D for anything Ring did not report. */
+function deviceSettingsText(ctx) {
+  if (!ctx || typeof ctx !== 'object') return `Ring settings ${METRIC_NOT_AVAILABLE}`;
+  const enh = ctx.image_enhancements || {};
+  const motion = ctx.motion_detection || {};
+  const zones = motion.zones;
+  const zonesText = zones == null ? '' : ` (${zones} zone${zones === 1 ? '' : 's'})`;
+  return `Ring settings: night vision color ${onOffText(enh.color_night_vision)}`
+    + ` · IR LED ${onOffText(enh.ir_led_night_vision)} · HDR ${onOffText(enh.hdr)}`
+    + ` · privacy zones ${enh.privacy_zones ?? METRIC_NOT_AVAILABLE}`
+    + ` · motion ${onOffText(motion.enabled)}${zonesText}`;
+}
+
 function updatePartnerBadges(t) {
   const dh = (t && t.device_health) || {};
 
@@ -454,6 +471,11 @@ function updatePartnerBadges(t) {
     capsEl.style.display = '';
     capsEl.textContent = caps && typeof caps === 'object' && !Array.isArray(caps)
       ? capabilitiesText(caps) : `Ring capabilities ${METRIC_NOT_AVAILABLE}`;
+  }
+  const settingsEl = document.getElementById('partner-settings');
+  if (settingsEl) {
+    settingsEl.style.display = '';
+    settingsEl.textContent = deviceSettingsText(t && t.device_context);
   }
 
   const onlineEl = document.getElementById('badge-online');

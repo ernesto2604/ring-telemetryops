@@ -65,6 +65,8 @@ def partner_device_to_telemetry(device: Dict[str, Any]) -> Dict[str, Any]:
         "device_model": None,
         "device_health": device_health,
         "capabilities": device.get("capabilities"),
+        # Settings Ring reported (configurations, location, snooze); None when not fetched.
+        "device_context": device.get("device_context"),
         "webrtc_stats": {
             "inbound_rtp": {
                 "kind": "video",

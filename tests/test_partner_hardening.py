@@ -192,3 +192,145 @@ def test_406_from_the_client_is_never_a_mode_change(partner_mode):
 def test_simulator_status_is_unchanged():
     status = api.get("/api/ring/status").json()
     assert status["source"] == "simulator" and "error_reason" not in status
+
+
+# ---------------------------------------------------------------------------
+# T22: device settings from GET /v1/devices/{id}?include=...
+# ---------------------------------------------------------------------------
+
+from src.utils.partner_telemetry import partner_device_to_telemetry  # noqa: E402
+from src.utils.ring_partner_client import build_device_context  # noqa: E402
+
+DEVICE_ID = "ava1.ring.device.CTX1"
+ZONE = {"id": "z1", "vertices": [{"x": 0.1, "y": 0.1}, {"x": 0.9, "y": 0.1}, {"x": 0.5, "y": 0.9}]}
+
+# Fictitious document shaped like the documented JSON:API format (top-level `included`).
+INCLUDE_DOCUMENT = {
+    "data": {"type": "devices", "id": DEVICE_ID, "attributes": {"name": "Porch"}},
+    "included": [
+        {"type": "device-status", "id": DEVICE_ID,
+         "attributes": {"online": True, "reported_at": "2026-10-20T10:00:00Z",
+                        "audio": {"snooze": {"active": True, "until": "2026-10-20T11:00:00Z"}}}},
+        {"type": "device-capabilities", "id": DEVICE_ID,
+         "attributes": {"video": {"codecs": ["AVC"], "max_resolution": 1080, "supported_resolutions": [1080, 720]},
+                        "image_enhancements": {"configurations": ["hdr", "privacy_zones"]}}},
+        {"type": "device-configurations", "id": DEVICE_ID,
+         "attributes": {"e2e_encryption": {"enabled": False},
+                        "motion_detection": {"enabled": "on", "motion_zones": [ZONE]},
+                        "image_enhancements": {"color_night_vision": "off", "hdr": "off",
+                                               "ir_led_night_vision": "off", "auto_zoom_track": "on",
+                                               "privacy_zones": []},
+                        "video": {"component_id": None}}},
+        {"type": "device-location", "id": DEVICE_ID, "attributes": {"country": "US", "state": "WA"}},
+    ],
+}
+
+
+def single_device_routes(device_handler, status_attrs=None, capability_attrs=None):
+    async def devices(_request):
+        return web.json_response({"data": [{"type": "devices", "id": DEVICE_ID, "attributes": {"name": "Porch"}}]})
+
+    async def status(_request):
+        return web.json_response({"data": {"type": "device-status", "id": DEVICE_ID,
+                                           "attributes": status_attrs or {"online": True}}})
+
+    async def capabilities(_request):
+        return web.json_response({"data": {"type": "device-capabilities", "id": DEVICE_ID,
+                                           "attributes": capability_attrs or {}}})
+
+    return {"/v1/devices": devices, f"/v1/devices/{DEVICE_ID}": device_handler,
+            f"/v1/devices/{DEVICE_ID}/status": status, f"/v1/devices/{DEVICE_ID}/capabilities": capabilities}
+
+
+def test_include_call_fills_device_context_in_one_request(monkeypatch):
+    monkeypatch.setenv("RING_PARTNER_HARDWARE_ID", "hw-test")
+
+    async def device(request):
+        assert request.query["include"] == "status,capabilities,configurations,location"
+        return web.json_response(INCLUDE_DOCUMENT)
+
+    (found,), requests = run_against(single_device_routes(device), lambda c: c.list_devices())
+
+    assert [r.path for r in requests] == ["/v1/devices", f"/v1/devices/{DEVICE_ID}"]  # no individual calls
+    assert_ring_headers(requests, "hw-test")
+    assert found["device_health"]["online"] is True
+    assert found["capabilities"]["video"]["max_resolution"] == 1080
+    assert found["device_context"] == {
+        "e2e_encryption_enabled": False,
+        "motion_detection": {"enabled": True, "zones": 1},
+        "image_enhancements": {"color_night_vision": False, "hdr": False, "ir_led_night_vision": False,
+                               "auto_zoom_track": True, "privacy_zones": 0},
+        "video": {"max_resolution": 1080, "supported_resolutions": [1080, 720]},
+        "location": {"country": "US", "state": "WA"},
+        "snooze": {"active": True, "until": "2026-10-20T11:00:00Z"},
+    }
+
+
+@pytest.mark.parametrize("reply", [
+    lambda: web.json_response({"data": INCLUDE_DOCUMENT["data"]}),          # no `included`
+    lambda: jsonapi_error(500, title="Internal"),                            # combined call fails
+])
+def test_without_included_falls_back_to_individual_calls(reply):
+    async def device(_request):
+        return reply()
+
+    (found,), requests = run_against(single_device_routes(device, capability_attrs={"video": {"max_resolution": 720}}),
+                                     lambda c: c.list_devices(), max_transient_retries=0)
+
+    paths = [r.path for r in requests]
+    assert f"/v1/devices/{DEVICE_ID}/status" in paths and f"/v1/devices/{DEVICE_ID}/capabilities" in paths
+    assert found["device_health"]["online"] is True and found["fetch_errors"] == {}
+    context = found["device_context"]
+    assert context["e2e_encryption_enabled"] is None
+    assert context["image_enhancements"]["hdr"] is None and context["location"] == {"country": None, "state": None}
+    assert context["video"]["max_resolution"] == 720   # capabilities still come from the fallback
+
+
+def test_unauthorized_combined_call_aborts_listing():
+    async def device(_request):
+        return jsonapi_error(401, title="Unauthorized")
+
+    async def call(client):
+        with pytest.raises(RingUnauthorizedError):
+            await client.list_devices()
+
+    run_against(single_device_routes(device), call)
+
+
+def test_null_and_malformed_fields_stay_null():
+    context = build_device_context(
+        {"audio": {"snooze": {"active": "yes", "until": None}}},
+        {"video": {"supported_resolutions": "1080"}},
+        {"e2e_encryption": {"enabled": "true"},
+         "motion_detection": {"enabled": None, "motion_zones": None},
+         "image_enhancements": {"color_night_vision": "maybe", "privacy_zones": None}},
+        None,
+    )
+    assert context["e2e_encryption_enabled"] is None          # the string "true" is not the boolean
+    assert context["motion_detection"] == {"enabled": None, "zones": None}
+    assert context["image_enhancements"]["color_night_vision"] is None
+    assert context["image_enhancements"]["privacy_zones"] is None
+    assert context["video"] == {"max_resolution": None, "supported_resolutions": None}
+    assert context["snooze"] == {"active": None, "until": None}
+    assert context["location"] == {"country": None, "state": None}
+
+
+def test_status_endpoint_and_telemetry_expose_device_context(partner_mode):
+    context = build_device_context(None, None, INCLUDE_DOCUMENT["included"][2]["attributes"], None)
+    partner_mode.devices[0]["device_context"] = context
+
+    status = api.get("/api/ring/status").json()
+    assert status["devices"][0]["device_context"] == context
+    assert partner_device_to_telemetry(partner_mode.devices[0])["device_context"] == context
+    assert api.get("/api/ring/telemetry").json()["device_context"] == context
+
+
+def test_bedrock_prompt_gets_device_settings_only_in_partner_mode(monkeypatch):
+    from src.agent import concierge as concierge_module
+
+    section = concierge_module._device_settings_section(
+        build_device_context(None, None, INCLUDE_DOCUMENT["included"][2]["attributes"], None))
+    assert "DEVICE SETTINGS REPORTED BY RING" in section
+    assert "- Color night vision   : off" in section and "(zones: 1)" in section
+    assert DEVICE_ID not in section and "z1" not in section          # no IDs
+    assert concierge_module._device_settings_section(None) == ""     # simulator telemetry has no context
