@@ -189,6 +189,11 @@ defines no sharpness, blur, colour or banding metric.
   the simulator's flicker gave 15.8 in the browser and 17.2 in the Python emulation used by the tests.
   The customer message points to the Anti-Flicker setting in the Ring app: that setting comes from the
   project knowledge base (KB-RING-014, unverified), not from Ring documentation.
+* **Ring images (watermark and banding):** for frames from Ring, the watermark band is cropped in pixels
+  (`RING_WATERMARK_BAND_PX`, 100 px, at most 35 % of the height), because the watermark has a fixed size,
+  and banding also requires a clear periodic row-brightness profile (`RING_BANDING_PERIODICITY_LIMIT`):
+  detailed real outdoor scenes exceeded the simulator-calibrated 4.5 without any flicker. The real
+  calibration used only three Ring Playground frames. The simulator keeps the variance-only rule.
 * **Black frame:** mean brightness below 4.0 is `CRITICAL` (no usable optical signal).
 * **Stream metrics:** frame rate and bitrate use the FPS and bitrate bands of the severity table.
 
@@ -524,8 +529,9 @@ Partner mode only; the simulator is unchanged.
   recording" (416) and "corrupt recording" (422) are normal outcomes explained in the visual findings. No
   snapshot is requested for encrypted video or a device without snapshot support.
 * **Watermark:** Ring media carries a mandatory watermark in its top corners, which would inflate the
-  sharpness score. Ring snapshots are measured without the top `RING_WATERMARK_TOP_FRACTION` (10 %, a
-  project heuristic); the simulator and the sample videos are measured as before.
+  sharpness score and the banding measure. Ring snapshots are measured without the top
+  `RING_WATERMARK_BAND_PX` rows (100 px, at most 35 % of the height; a project heuristic); the simulator
+  and the sample videos are measured as before.
 * **In memory only:** Ring frames are never written to disk or logged. The last one is kept in memory and
   served by `GET /api/ring/snapshot` (`Cache-Control: no-store`) for the Partner monitor, which shows it
   with Ring's time and origin.
@@ -576,6 +582,8 @@ Partner mode only; the simulator is unchanged.
 * **Dropped frames:** the "210/450 frames dropped" Bedrock may cite comes from the simulated
   `wifi_degradation` scenario. The Twin sliders do not simulate dropped frames, so slider telemetry
   reports them as unavailable ("not simulated by the Digital Twin sliders").
+* **Ring banding calibration:** the periodicity gate for Ring frames was checked on three Ring
+  Playground frames and synthetic scenes only; flicker in real Ring media has not been observed yet.
 * **Confidence** is self-assessed by the model (Bedrock) or fixed (0.86, fallback); see above.
 * **Mechanical in-home chime (B5)** is simulator / CLI / API only (see the demo walkthrough).
 
