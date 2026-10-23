@@ -85,7 +85,7 @@ class FakeRing:
         # Event pages by page key ("" = first page); each is a list of history-events items.
         self.event_pages: Dict[str, List[Dict[str, Any]]] = {"": []}
         self.event_links: Dict[str, str] = {}      # page key -> next page key
-        self.events_error: Optional[tuple] = None   # (status, headers)
+        self.events_error: Optional[tuple] = None   # (status, headers) or (status, headers, code)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._runner: Optional[web.AppRunner] = None
         self.url = ""
@@ -178,8 +178,8 @@ class FakeRing:
 
     async def _events(self, request):
         if self.events_error:
-            status, headers = self.events_error
-            return jsonapi_error(status, headers=headers)
+            status, headers, code = (*self.events_error, None)[:3]   # (status, headers[, code])
+            return jsonapi_error(status, code=code, headers=headers)
         key = request.query.get("page[key]", "")
         document: Dict[str, Any] = {"data": self.event_pages.get(key, [])}
         if key in self.event_links:

@@ -78,7 +78,7 @@ def test_partner_snapshot_success_and_failure_are_counted_by_cause(partner):  # 
     m = api.get("/api/metrics").json()
     assert m["snapshots_ok"] == 1
     assert m["snapshots_failed"] == {"no_recent_media": 0, "media_undecryptable": 1, "corrupt_recording": 0,
-                                     "unreadable_image": 0, "other": 0}
+                                     "unreadable_image": 0, "time_range_not_authorized": 0, "other": 0}
     # Partner never shares Wi-Fi or power: both analyses end as INSUFFICIENT_DATA from the pre-check.
     assert m["analyses_total"] == 2 and m["insufficient_data"] == 2
 

@@ -342,7 +342,10 @@ const RING_ERROR_HINTS = {
   missing_token: 'No Ring token configured.',
   token_rejected: 'Ring rejected the token. Playground tokens expire after 30 minutes: '
     + 'generate a new one and restart the server.',
-  blocked_406: 'Ring blocked the request: missing headers or a datacenter IP.',
+  blocked_406: 'Ring blocked the request: required headers are missing, the request came from a datacenter IP, '
+    + 'or Ring Security blocked this IP (not retryable; contact Ring developer support).',
+  time_range_not_authorized: 'Ring only allows access to recordings made after you connected this app; '
+    + 'the requested time is earlier.',
   rate_limited: 'Ring rate limit reached: requests resume after the wait Ring asked for.',
   device_offline_503: 'Ring answered 503: the device is unreachable or Ring is busy.',
   network_error: 'Ring could not be reached (timeout or network error).',

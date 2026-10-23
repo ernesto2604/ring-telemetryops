@@ -7,7 +7,7 @@ import pytest
 from aiohttp import web
 
 from src.utils import ring_partner_client as rpc
-from src.utils.ring_partner_client import RingBlockedError, RingPartnerClient, RingRateLimitError
+from src.utils.ring_partner_client import BLOCKED_406_TEXT, RingBlockedError, RingPartnerClient, RingRateLimitError
 from tests.test_ring_partner_client import (
     CAPABILITY_ATTRIBUTES,
     ONLINE_ID,
@@ -78,7 +78,7 @@ def test_406_is_an_explicit_blocked_error_without_token():
 
     error, requests = run_against({"/v1/devices": blocked}, call)
     assert error.status == 406
-    assert "Ring blocked the request: missing headers or a datacenter IP" in str(error)
+    assert BLOCKED_406_TEXT in str(error) and "/v1/devices" in str(error)
     assert FAKE_TOKEN not in str(error)
     assert len(requests) == 1   # not retried
 

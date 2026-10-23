@@ -9,7 +9,8 @@ import statistics
 from collections import deque
 from typing import Any, Dict, Optional
 
-SNAPSHOT_FAILURE_CAUSES = ("no_recent_media", "media_undecryptable", "corrupt_recording", "unreadable_image")
+SNAPSHOT_FAILURE_CAUSES = ("no_recent_media", "media_undecryptable", "corrupt_recording", "unreadable_image",
+                           "time_range_not_authorized")
 LATENCY_ENGINES = ("bedrock", "local_fallback", "precheck")
 LATENCY_SAMPLES = 100
 COUNTERS = ("analyses_total", "precheck_nominal", "precheck_anomaly", "bedrock_calls", "bedrock_retries",

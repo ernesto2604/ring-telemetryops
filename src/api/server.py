@@ -68,9 +68,11 @@ from src.utils.ring_partner_client import (
     RingPartnerError,
     RingRateLimitError,
     RingServiceUnavailableError,
+    RingTimeRangeNotAuthorizedError,
     RingTimeoutError,
     RingUnauthorizedError,
     DEFAULT_EVENT_TYPES,
+    TIME_RANGE_NOT_AUTHORIZED_TEXT,
     SNAPSHOT_WAIT_BUDGET_SECONDS,
     EVENT_TYPES_ENV_VAR,
     first_component_id,
@@ -108,6 +110,7 @@ SNAPSHOT_REASONS = {
     "corrupt_recording": "Ring reported a damaged recording, so the image could not be checked.",
     "media_undecryptable": "Ring could not decrypt the latest recording, so the image could not be checked.",
     "unreadable_image": "Ring returned an image this app could not read, so it could not be checked.",
+    "time_range_not_authorized": TIME_RANGE_NOT_AUTHORIZED_TEXT,
 }
 # `_source` of telemetry sent in the request body: set by the server, never taken from the caller.
 CLIENT_TELEMETRY_SOURCE = "client_supplied"
@@ -171,6 +174,8 @@ def _partner_error_reason(exc: RingPartnerError) -> str:
     """Machine-readable cause of a Partner failure, for the UI hint (never contains the token)."""
     if isinstance(exc, RingNotConfiguredError):
         return "missing_token"
+    if isinstance(exc, RingTimeRangeNotAuthorizedError):
+        return "time_range_not_authorized"   # a 403 about the time asked for, not the token
     if isinstance(exc, (RingUnauthorizedError, RingForbiddenError)):
         return "token_rejected"
     if isinstance(exc, RingBlockedError):

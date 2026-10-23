@@ -101,7 +101,17 @@ class RingNotFoundError(RingPartnerError):
 
 
 class RingBlockedError(RingPartnerError):
-    """HTTP 406 — Ring's firewall rejected the request (missing required headers or a datacenter IP)."""
+    """
+    HTTP 406 — Ring's firewall rejected the request: missing required headers, a datacenter IP, or an IP
+    that Ring Security blocked for irregular traffic (not retryable).
+    """
+
+
+class RingTimeRangeNotAuthorizedError(RingPartnerError):
+    """
+    HTTP 403 with code TIME_RANGE_NOT_AUTHORIZED: the requested time is before the user's consent.
+    Not a credential error: other (newer) media can still be read.
+    """
 
 
 class RingRateLimitError(RingPartnerError):
@@ -124,6 +134,15 @@ class RingServiceUnavailableError(RingPartnerError):
         super().__init__(message, **kwargs)
         self.retry_after = retry_after
 
+
+TIME_RANGE_NOT_AUTHORIZED = "TIME_RANGE_NOT_AUTHORIZED"
+TIME_RANGE_NOT_AUTHORIZED_TEXT = (
+    "Ring only allows access to recordings made after you connected this app; the requested time is earlier."
+)
+BLOCKED_406_TEXT = (
+    "Ring blocked the request: required headers are missing, the request came from a datacenter IP, "
+    "or Ring Security blocked this IP (not retryable; contact Ring developer support)"
+)
 
 # Ring documents exponential backoff starting at 1 second for transient server errors. 503 is not
 # retried: Ring documents it mostly as "device offline", which a quick retry does not change.
@@ -630,8 +649,9 @@ class RingPartnerClient:
 
         Returns {"status", "image", "content_type", "media_timestamp", "media_origin"}; `status` is
         "ok", "no_recent_media" (416), "not_ready", "media_undecryptable" (422 decryption-key error,
-        on the POST or the pre-signed GET), "corrupt_recording" (other 422) or "unreadable_image" (not
-        a decodable JPEG/PNG within SNAPSHOT_MAX_BYTES). The image stays in memory: it is never logged.
+        on the POST or the pre-signed GET), "corrupt_recording" (other 422), "time_range_not_authorized"
+        (403 TIME_RANGE_NOT_AUTHORIZED: before the user's consent) or "unreadable_image" (not a
+        decodable JPEG/PNG within SNAPSHOT_MAX_BYTES). The image stays in memory: it is never logged.
         Other HTTP errors raise the typed errors of `_get_json`.
         """
         if not self._token:
@@ -687,7 +707,10 @@ class RingPartnerClient:
                     continue
                 if status == 303:
                     raise RingPartnerError(f"Ring API POST {path} answered 303 without a Location", status=303)
-                raise self._error(status, text, path, retry_after, method="POST")
+                error = self._error(status, text, path, retry_after, method="POST")
+                if isinstance(error, RingTimeRangeNotAuthorizedError):
+                    return _snapshot_result("time_range_not_authorized")
+                raise error
 
             return await self._fetch_presigned(session, urljoin(f"{self.base_url}/", location))
 
@@ -790,8 +813,11 @@ class RingPartnerClient:
             pass  # non-JSON body (e.g. a proxy HTML page): keep only the HTTP status
 
         message = f"Ring API {method} {path} failed with HTTP {status}"
+        time_range = status == 403 and fields["code"] == TIME_RANGE_NOT_AUTHORIZED
         if status == 406:
-            message = f"Ring blocked the request: missing headers or a datacenter IP ({method} {path}, HTTP 406)"
+            message = f"{BLOCKED_406_TEXT} ({method} {path}, HTTP 406)"
+        elif time_range:
+            message = f"{TIME_RANGE_NOT_AUTHORIZED_TEXT} ({method} {path}, HTTP 403)"
         reason = " — ".join(v for v in (fields["title"], fields["detail"]) if v)
         if reason:
             message += f": {reason}"
@@ -801,7 +827,7 @@ class RingPartnerClient:
             message += f"; Retry-After {retry_after:.1f}s"
         message = self._redact(message)
 
-        error_cls = _STATUS_ERRORS.get(status, RingPartnerError)
+        error_cls = RingTimeRangeNotAuthorizedError if time_range else _STATUS_ERRORS.get(status, RingPartnerError)
         if error_cls in (RingRateLimitError, RingServiceUnavailableError):
             return error_cls(message, retry_after=retry_after, status=status, **fields)
         return error_cls(message, status=status, **fields)
