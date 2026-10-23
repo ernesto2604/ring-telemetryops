@@ -497,3 +497,84 @@ def test_simulator_reports_have_no_checked_domains():
                                           "telemetry": {"scenario": "nominal"}}).json()
     assert "checked_domains" not in body
     assert body["diagnostic_result"]["recommended_mitigation"] != server.PARTNER_NO_IMAGE_MITIGATION
+
+
+# ---------------------------------------------------------------------------
+# T35 Analyze now starts from the newest event's recording
+# ---------------------------------------------------------------------------
+
+EVENT_STARTS = [1_761_209_000_000, 1_761_208_000_000, 1_761_207_000_000, 1_761_206_000_000]
+
+
+@pytest.fixture
+def with_events(partner):
+    ring, llm_calls = partner
+    ring.event_pages[""] = [history_event(f"evt-{i}", "motion", start) for i, start in enumerate(EVENT_STARTS)]
+    return ring
+
+
+def snapshot_bodies(ring):
+    return [r["json"] for r in ring.requests if r["method"] == "POST" and r["path"] == SNAPSHOT_POST]
+
+
+def test_analyze_now_uses_the_newest_event_recording(with_events):
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    assert [b["type"] for b in snapshot_bodies(with_events)] == ["at_timestamp"]
+    assert snapshot_bodies(with_events)[0]["timestamp"] == EVENT_STARTS[0]
+
+
+def test_analyze_now_moves_to_the_next_event_after_a_422(with_events):
+    with_events.snapshot_replies = [(422, None, "CORRUPT_RECORDING"), None]
+
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    assert [b.get("timestamp") for b in snapshot_bodies(with_events)] == EVENT_STARTS[:2]
+
+
+def test_analyze_now_falls_back_to_latest_in_range_after_three_events(with_events):
+    with_events.snapshot_replies = [(422, None, "CORRUPT_RECORDING"), (416, None, "MEDIA_NOT_FOUND"),
+                                    (422, None, "CORRUPT_RECORDING"), None]
+
+    body = analyze().json()
+
+    assert body["diagnostic_result"]["visual_findings"] == [RING_SNAPSHOT_OK_FINDING]
+    bodies = snapshot_bodies(with_events)
+    assert [b["type"] for b in bodies] == ["at_timestamp"] * 3 + ["latest_in_range"]
+    assert [b["timestamp"] for b in bodies[:3]] == EVENT_STARTS[:3]
+
+
+def test_analyze_now_without_events_uses_only_latest_in_range(partner):
+    ring, _ = partner
+
+    analyze()
+
+    assert [b["type"] for b in snapshot_bodies(ring)] == ["latest_in_range"]
+    assert f"/v1/history/devices/{DEVICE_ID}/events" in ring.paths("GET")
+
+
+def test_analyze_now_reuses_the_polled_events_without_a_new_query(partner, monkeypatch):
+    ring, _ = partner
+    monkeypatch.setattr(server, "_partner_events", [{"id": "e", "event_type": "ding", "sub_type": None,
+                                                     "start": EVENT_STARTS[1], "end": None,
+                                                     "is_third_party_reviewed": False}])
+    monkeypatch.setattr(server, "_events_poll", {"last_query": None, "paused_until": 0.0, "device_id": DEVICE_ID})
+
+    analyze()
+
+    assert snapshot_bodies(ring)[0]["timestamp"] == EVENT_STARTS[1]
+    assert not any("/history/" in p for p in ring.paths())
+
+
+@pytest.mark.parametrize("status, http_status", [(401, 502), (429, 200)], ids=["token-rejected", "rate-limited"])
+def test_analyze_now_does_not_try_other_events_after_a_credential_or_ring_error(with_events, status, http_status):
+    with_events.snapshot_replies = [(status, {"Retry-After": "120"}, None), None]
+
+    response = analyze()
+
+    assert response.status_code == http_status
+    assert len(snapshot_bodies(with_events)) == 1
+    if status == 401:
+        assert response.json()["detail"]["reason"] == "token_rejected"

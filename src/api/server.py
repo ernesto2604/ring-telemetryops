@@ -63,6 +63,7 @@ from src.utils.ring_partner_client import (
     RingTimeoutError,
     RingUnauthorizedError,
     DEFAULT_EVENT_TYPES,
+    SNAPSHOT_WAIT_BUDGET_SECONDS,
     EVENT_TYPES_ENV_VAR,
     first_component_id,
 )
@@ -633,34 +634,98 @@ async def generate_telemetry(req: TelemetryRequest):
 _latest_snapshot: Optional[Dict[str, Any]] = None
 
 
-async def _partner_snapshot(telemetry: Dict[str, Any], at_timestamp_ms: Optional[int] = None) -> tuple:
-    """
-    (frame_base64, no_frame_reason, snapshot_meta) for one Partner device. No request when the
-    video is end-to-end encrypted or the device does not list snapshot support. Credential errors
-    raise as HTTP errors (T21 reasons); other failures leave a telemetry-only diagnosis.
-    """
-    global _latest_snapshot
+def _snapshot_guard(telemetry: Dict[str, Any]) -> Optional[str]:
+    """Why no snapshot is requested (end-to-end encrypted, or no snapshot support), else None."""
     context = telemetry.get("device_context") or {}
     if context.get("media_readable") is False:
-        return None, E2E_ENCRYPTED_REASON, None
+        return E2E_ENCRYPTED_REASON
     if context.get("snapshot_supported") is not True:
-        return None, PARTNER_NO_FRAME_REASON, None
+        return PARTNER_NO_FRAME_REASON
+    return None
+
+
+async def _download_snapshot(telemetry: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
+    """Client result; credential errors raise as HTTP errors (T21), other Ring errors become status "error"."""
     try:
-        result = await partner_client.download_snapshot(
-            telemetry["device_id"], at_timestamp_ms=at_timestamp_ms,
-            component_id=first_component_id(telemetry.get("capabilities")),
-            wait_for_recording=at_timestamp_ms is not None,
-        )
+        return await partner_client.download_snapshot(
+            telemetry["device_id"], component_id=first_component_id(telemetry.get("capabilities")), **kwargs)
     except (RingUnauthorizedError, RingForbiddenError, RingBlockedError, RingNotConfiguredError) as exc:
         raise _partner_http_error(exc) from None
     except RingPartnerError as exc:
-        return None, f"Ring could not provide a snapshot ({_partner_error_reason(exc)}): no image was analyzed", None
+        return {"status": "error",
+                "reason": f"Ring could not provide a snapshot ({_partner_error_reason(exc)}): no image was analyzed"}
+
+
+def _snapshot_outcome(telemetry: Dict[str, Any], result: Dict[str, Any]) -> tuple:
+    """(frame_base64, no_frame_reason, snapshot_meta); an image is kept in memory for /api/ring/snapshot."""
+    global _latest_snapshot
+    if result["status"] == "error":
+        return None, result["reason"], None
     if result["status"] != "ok":
         return None, SNAPSHOT_REASONS[result["status"]], None
     meta = {"device_id": telemetry["device_id"], "media_timestamp": result["media_timestamp"],
             "media_origin": result["media_origin"], "content_type": result["content_type"]}
     _latest_snapshot = {**meta, "image": result["image"]}
     return base64.b64encode(result["image"]).decode("ascii"), None, meta
+
+
+async def _partner_snapshot(telemetry: Dict[str, Any], at_timestamp_ms: Optional[int] = None) -> tuple:
+    """
+    (frame_base64, no_frame_reason, snapshot_meta) for one Partner device. No request when the
+    video is end-to-end encrypted or the device does not list snapshot support. Credential errors
+    raise as HTTP errors (T21 reasons); other failures leave a telemetry-only diagnosis.
+    """
+    reason = _snapshot_guard(telemetry)
+    if reason:
+        return None, reason, None
+    result = await _download_snapshot(telemetry, at_timestamp_ms=at_timestamp_ms,
+                                      wait_for_recording=at_timestamp_ms is not None)
+    return _snapshot_outcome(telemetry, result)
+
+
+# Analyze now asks for the recording of the newest known events first: Ring's "latest image of the
+# last 24 h" can point at a recording it cannot decrypt (422 GRECO_NO_VALID_KEY, seen live).
+ANALYZE_NOW_EVENT_ATTEMPTS = 3
+ANALYZE_NOW_BUDGET_SECONDS = 20.0
+
+
+async def _recent_event_starts(device_id: str) -> list:
+    """Start times (epoch ms) of the device's known events, newest first; one Ring query when none are known."""
+    events = _partner_events if _events_poll.get("device_id") == device_id else []
+    if not events:
+        event_types = os.getenv(EVENT_TYPES_ENV_VAR, "").strip() or DEFAULT_EVENT_TYPES
+        try:
+            events = await partner_client.list_events(device_id, event_types, max_pages=1)
+        except (RingUnauthorizedError, RingForbiddenError, RingBlockedError, RingNotConfiguredError) as exc:
+            raise _partner_http_error(exc) from None
+        except RingPartnerError as exc:
+            logger.info("Ring events unavailable for Analyze now (%s); using the latest image", type(exc).__name__)
+            events = []
+    return sorted({e["start"] for e in events if isinstance(e.get("start"), int)}, reverse=True)
+
+
+async def _analyze_now_snapshot(telemetry: Dict[str, Any]) -> tuple:
+    """
+    Analyze now: the snapshot at the start of the newest event, then of up to two older ones when
+    Ring answers without a usable image (416, 422, unreadable bytes), within ANALYZE_NOW_BUDGET_SECONDS.
+    Ring errors (timeouts, 429, 5xx) stop at once; credential errors raise (T21). With no event,
+    or when every event fails, the latest image of the last 24 h is the last resort.
+    """
+    reason = _snapshot_guard(telemetry)
+    if reason:
+        return None, reason, None
+    deadline = time.monotonic() + ANALYZE_NOW_BUDGET_SECONDS
+
+    def budget() -> float:
+        return max(0.0, min(SNAPSHOT_WAIT_BUDGET_SECONDS, deadline - time.monotonic()))
+
+    for start in (await _recent_event_starts(telemetry["device_id"]))[:ANALYZE_NOW_EVENT_ATTEMPTS]:
+        if budget() <= 0:
+            break
+        result = await _download_snapshot(telemetry, at_timestamp_ms=start, wait_budget_seconds=budget())
+        if result["status"] in ("ok", "error"):
+            return _snapshot_outcome(telemetry, result)
+    return _snapshot_outcome(telemetry, await _download_snapshot(telemetry, wait_budget_seconds=budget()))
 
 
 @app.get("/api/ring/snapshot")
@@ -683,7 +748,7 @@ MAX_RECENT_EVENTS = 20
 _SERVER_STARTED_MS = int(time.time() * 1000)
 _partner_events: list = []
 _seen_event_ids: set = set()
-_events_poll = {"last_query": None, "paused_until": 0.0}
+_events_poll = {"last_query": None, "paused_until": 0.0, "device_id": None}
 # Event type -> UI trigger key (the Digital Twin's Ding / PIR / Live View names).
 EVENT_TRIGGERS = {"ding": "ding", "motion": "motion", "on_demand": "live"}
 
@@ -775,6 +840,7 @@ async def get_ring_events():
         event_types = os.getenv(EVENT_TYPES_ENV_VAR, "").strip() or DEFAULT_EVENT_TYPES
         try:
             events = await client.list_events(target, event_types)
+            _events_poll["device_id"] = target
         except RingRateLimitError as exc:
             _events_poll["paused_until"] = now + (exc.retry_after if exc.retry_after is not None else poll_seconds)
             raise _partner_http_error(exc) from None
@@ -821,7 +887,7 @@ async def analyze(req: AnalyzeRequest):
         # Always official telemetry; caller-supplied telemetry is not presented as Ring data.
         telemetry = await _partner_telemetry(req.device_id)
         # Only a Ring snapshot is a Ring camera image: the caller's frame and camera_active are ignored.
-        frame_base64, no_frame_reason, snapshot = await _partner_snapshot(telemetry)
+        frame_base64, no_frame_reason, snapshot = await _analyze_now_snapshot(telemetry)
         camera_active = True
     elif wants_live:
         # Ring data was requested but Partner is not the selected source: explicit error, no Twin fallback.

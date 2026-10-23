@@ -595,6 +595,7 @@ class RingPartnerClient:
         at_timestamp_ms: Optional[int] = None,
         component_id: Optional[str] = None,
         wait_for_recording: bool = False,
+        wait_budget_seconds: float = SNAPSHOT_WAIT_BUDGET_SECONDS,
     ) -> Dict[str, Any]:
         """
         Ring image snapshot, server to server in two steps: POST .../media/image/download answers
@@ -602,7 +603,7 @@ class RingPartnerClient:
 
         Latest image of the last 24 h, or the image at `at_timestamp_ms` (epoch ms, for an event).
         No `resolution` is requested, so the fixed-size watermark covers the least of the image.
-        425 (recording not ready) is retried within SNAPSHOT_WAIT_BUDGET_SECONDS; with
+        425 (recording not ready) is retried within `wait_budget_seconds`; with
         `wait_for_recording`, 416 is too (an event's recording may not exist yet). 500/503 are
         retried once; 422 never.
 
@@ -650,7 +651,7 @@ class RingPartnerClient:
                 if status == 425 or (status == 416 and wait_for_recording):
                     attempt += 1
                     delay = retry_after if retry_after is not None else TRANSIENT_BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
-                    if waited + delay > SNAPSHOT_WAIT_BUDGET_SECONDS:
+                    if waited + delay > wait_budget_seconds:
                         return _snapshot_result("not_ready" if status == 425 else "no_recent_media")
                     waited += delay
                     await self._sleep(delay)
