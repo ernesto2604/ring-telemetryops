@@ -279,7 +279,7 @@ function updateHeartbeatUI() {
   if (countEl && state.ringSource === 'partner') {
     countEl.textContent = state.offlineAlertActive
       ? `Offline confirmed (${state.offlineStreak} reads)`
-      : `Offline ${state.offlineStreak}/${state.offlineAlertReads} reads`;
+      : `Offline reads ${state.offlineStreak}/${state.offlineAlertReads}`;
     countEl.className = 'persistency-badge ' + (
       state.offlineAlertActive ? 'crit' : state.offlineStreak > 0 ? 'warn' : 'ok'
     );

@@ -328,7 +328,7 @@ test('online false shows Offline and confirms the alert only after N consecutive
   await page.run('onHeartbeatPulse()');
   assert.equal(page.el('badge-online').textContent, '🔴 Offline');
   assert.equal(page.run('state.offlineAlertActive'), false);
-  assert.equal(page.el('hb-persistency').textContent, 'Offline 1/2 reads');
+  assert.equal(page.el('hb-persistency').textContent, 'Offline reads 1/2');
 
   await page.run('onHeartbeatPulse()');
   assert.equal(page.run('state.offlineAlertActive'), true);
@@ -521,7 +521,7 @@ test('An online read resets the streak and clears the alert', async () => {
 
   assert.equal(page.run('state.offlineAlertActive'), false);
   assert.equal(page.run('state.offlineStreak'), 0);
-  assert.equal(page.el('hb-persistency').textContent, 'Offline 0/3 reads');
+  assert.equal(page.el('hb-persistency').textContent, 'Offline reads 0/3');
 });
 
 test('Brief API errors between offline reads keep the streak', async () => {
