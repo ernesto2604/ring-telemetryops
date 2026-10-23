@@ -440,6 +440,10 @@ function capabilitiesText(caps) {
     + (unsupported.length ? ` · Not supported: ${unsupported.join(', ')}` : '');
 }
 
+// Same text as the server's E2E_ENCRYPTED_REASON (the report's visual finding).
+const E2E_ENCRYPTED_WARNING =
+  'Video is end-to-end encrypted: image analysis is not possible; diagnosis uses device status only';
+
 function onOffText(v) {
   return v === true ? 'on' : v === false ? 'off' : METRIC_NOT_AVAILABLE;
 }
@@ -476,6 +480,12 @@ function updatePartnerBadges(t) {
   if (settingsEl) {
     settingsEl.style.display = '';
     settingsEl.textContent = deviceSettingsText(t && t.device_context);
+  }
+  const e2eEl = document.getElementById('partner-e2e-warning');
+  if (e2eEl) {
+    const encrypted = !!(t && t.device_context && t.device_context.media_readable === false);
+    e2eEl.style.display = encrypted ? '' : 'none';
+    e2eEl.textContent = encrypted ? E2E_ENCRYPTED_WARNING : '';
   }
 
   const onlineEl = document.getElementById('badge-online');

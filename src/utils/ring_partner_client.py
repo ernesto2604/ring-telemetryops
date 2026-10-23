@@ -312,6 +312,14 @@ def _count(value: Any) -> Optional[int]:
     return len(value) if isinstance(value, list) else None
 
 
+def is_video_readable(config_attrs: Optional[Dict[str, Any]]) -> bool:
+    """
+    False only when Ring reports `e2e_encryption.enabled` as the boolean true: media requests then
+    succeed but return encrypted content (an expected outcome, never retried).
+    """
+    return _sub(config_attrs, "e2e_encryption").get("enabled") is not True
+
+
 def build_device_context(
     status_attrs: Optional[Dict[str, Any]],
     capability_attrs: Optional[Dict[str, Any]],
@@ -329,6 +337,8 @@ def build_device_context(
     text = lambda v: v if isinstance(v, str) else None  # noqa: E731
     return {
         "e2e_encryption_enabled": e2e if isinstance(e2e, bool) else None,
+        # None when the configurations were not fetched (fallback path): readability is unknown.
+        "media_readable": is_video_readable(config_attrs) if config_attrs is not None else None,
         "motion_detection": {
             "enabled": _on_off(motion.get("enabled")),
             "zones": _count(motion.get("motion_zones")),

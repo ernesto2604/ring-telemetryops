@@ -257,6 +257,7 @@ def test_include_call_fills_device_context_in_one_request(monkeypatch):
     assert found["capabilities"]["video"]["max_resolution"] == 1080
     assert found["device_context"] == {
         "e2e_encryption_enabled": False,
+        "media_readable": True,
         "motion_detection": {"enabled": True, "zones": 1},
         "image_enhancements": {"color_night_vision": False, "hdr": False, "ir_led_night_vision": False,
                                "auto_zoom_track": True, "privacy_zones": 0},
@@ -334,3 +335,56 @@ def test_bedrock_prompt_gets_device_settings_only_in_partner_mode(monkeypatch):
     assert "- Color night vision   : off" in section and "(zones: 1)" in section
     assert DEVICE_ID not in section and "z1" not in section          # no IDs
     assert concierge_module._device_settings_section(None) == ""     # simulator telemetry has no context
+
+
+# ---------------------------------------------------------------------------
+# T23: end-to-end encrypted video
+# ---------------------------------------------------------------------------
+
+from src.utils.ring_partner_client import is_video_readable  # noqa: E402
+from tests.test_partner_api_server import low_battery_partner  # noqa: E402,F401  (fixture)
+
+
+@pytest.mark.parametrize("config, readable", [
+    ({"e2e_encryption": {"enabled": True}}, False),
+    ({"e2e_encryption": {"enabled": False}}, True),
+    ({"e2e_encryption": {"enabled": "true"}}, True),   # only the JSON boolean counts
+    ({}, True),
+    (None, True),
+])
+def test_is_video_readable(config, readable):
+    assert is_video_readable(config) is readable
+
+
+@pytest.mark.parametrize("config, media_readable", [
+    ({"e2e_encryption": {"enabled": True}}, False),
+    ({"e2e_encryption": {"enabled": False}}, True),
+    ({}, True),
+    (None, None),   # configurations not fetched
+])
+def test_device_context_media_readable(config, media_readable):
+    assert build_device_context(None, None, config, None)["media_readable"] is media_readable
+
+
+@pytest.mark.parametrize("enabled, expected_reason", [
+    (True, server.E2E_ENCRYPTED_REASON),
+    (False, server.PARTNER_NO_FRAME_REASON),
+    (None, server.PARTNER_NO_FRAME_REASON),
+])
+def test_encrypted_partner_device_reports_it_in_visual_findings(low_battery_partner, enabled, expected_reason):
+    fake, llm_calls = low_battery_partner
+    config = None if enabled is None else {"e2e_encryption": {"enabled": enabled},
+                                           "image_enhancements": {"color_night_vision": "on"}}
+    fake.devices[0]["device_context"] = build_device_context(None, None, config, None)
+
+    response = api.post("/api/analyze", json={"source_mode": "ring", "camera_active": True})
+
+    body = response.json()
+    assert response.status_code == 200                    # an expected outcome, not an error
+    assert body["video_analysis"] == {"available": False, "reason": expected_reason}
+    assert body["diagnostic_result"]["visual_findings"] == [expected_reason]
+    assert len(llm_calls) <= 2 and all(call["image"] is None for call in llm_calls)
+    prompt = llm_calls[0]["prompt"]
+    assert "DEVICE SETTINGS REPORTED BY RING" in prompt   # T22 context reaches the model in Partner mode
+    settings_section = prompt.split("DEVICE SETTINGS REPORTED BY RING")[1].split("\n\n")[0]
+    assert "ava1.ring.device" not in settings_section     # no device IDs in the settings context

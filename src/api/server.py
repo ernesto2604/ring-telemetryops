@@ -80,6 +80,9 @@ PARTNER_NO_FRAME_REASON = (
     "No video frame available: Ring Partner API image retrieval is not integrated yet. "
     "This diagnosis uses device telemetry only."
 )
+E2E_ENCRYPTED_REASON = (
+    "Video is end-to-end encrypted: image analysis is not possible; diagnosis uses device status only"
+)
 # `_source` of telemetry sent in the request body: set by the server, never taken from the caller.
 CLIENT_TELEMETRY_SOURCE = "client_supplied"
 
@@ -625,7 +628,8 @@ async def analyze(req: AnalyzeRequest):
         # Ring image retrieval is not integrated: a caller frame is not a Ring camera image, and
         # the caller's camera_active is not Ring data. Telemetry-only diagnosis that says so.
         frame_base64 = None
-        no_frame_reason = PARTNER_NO_FRAME_REASON
+        encrypted = (telemetry.get("device_context") or {}).get("media_readable") is False
+        no_frame_reason = E2E_ENCRYPTED_REASON if encrypted else PARTNER_NO_FRAME_REASON
     elif wants_live:
         # Ring data was requested but Partner is not the selected source: explicit error, no Twin fallback.
         raise HTTPException(

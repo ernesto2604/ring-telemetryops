@@ -1718,3 +1718,22 @@ test('T22: Technical details list Device settings (from Ring) only for Partner r
   assert.equal(page.el('tech-device-settings').style.display, 'none');
   assert.ok(!page.run('ticketText()').includes('Device settings'));
 });
+
+// ---------------------------------------------------------------------------
+// T23: end-to-end encrypted video warning on the Partner card
+// ---------------------------------------------------------------------------
+
+const E2E_TEXT = 'Video is end-to-end encrypted: image analysis is not possible; diagnosis uses device status only';
+
+for (const [label, mediaReadable, shown] of [['enabled', false, true], ['disabled', true, false], ['absent', null, false]]) {
+  test(`T23: E2E encryption ${label} -> warning ${shown ? 'shown' : 'hidden'}`, () => {
+    const page = loadPage();
+    page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+    const context = { ...RING_DEVICE_CONTEXT, media_readable: mediaReadable };
+
+    page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: context })})`);
+
+    assert.equal(page.el('partner-e2e-warning').style.display, shown ? '' : 'none');
+    assert.equal(page.el('partner-e2e-warning').textContent, shown ? E2E_TEXT : '');
+  });
+}
