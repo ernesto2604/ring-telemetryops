@@ -309,3 +309,90 @@ test('the browser never calls Ring directly', async () => {
   }
   assert.doesNotMatch(SOURCE, /amazonvision\.com/);
 });
+
+// -- T48: WebRTC stats line ----------------------------------------------------
+
+const rtp = (timestamp, extra = {}) => ({
+  type: 'inbound-rtp', kind: 'video', timestamp, framesDecoded: 0, bytesReceived: 0,
+  packetsLost: 0, jitter: 0.003, frameWidth: 1280, frameHeight: 720, ...extra,
+});
+const AUDIO = { type: 'inbound-rtp', kind: 'audio', timestamp: 0, jitter: 0.5, packetsLost: 99 };
+
+test('fps comes from framesPerSecond when present, else from framesDecoded deltas', () => {
+  const page = loadLiveView();
+  const withFps = page.run(`ringLiveStatsSample(new Map([['a', ${JSON.stringify(rtp(1000, { framesPerSecond: 24 }))}]]), null)`);
+  assert.equal(withFps.fps, 24);
+
+  const first = page.run(`ringLiveStatsSample(new Map([['a', ${JSON.stringify(rtp(1000, { framesDecoded: 100 }))}]]), null)`);
+  assert.equal(first.fps, null);   // no previous sample yet
+  page.run(`__prev = ${JSON.stringify(first)}`);
+  const second = page.run(`ringLiveStatsSample(new Map([['a', ${JSON.stringify(rtp(3000, { framesDecoded: 150 }))}]]), __prev)`);
+  assert.equal(second.fps, 25);
+});
+
+test('bitrate is the bytesReceived delta over time; jitter is shown in ms; audio is ignored', () => {
+  const page = loadLiveView();
+  page.run(`__prev = ringLiveStatsSample(new Map([['a', ${JSON.stringify(rtp(1000, { bytesReceived: 1_000_000 }))}]]), null)`);
+  const sample = page.run(`ringLiveStatsSample(new Map([['x', ${JSON.stringify(AUDIO)}],
+    ['a', ${JSON.stringify(rtp(2000, { bytesReceived: 1_137_500, framesPerSecond: 25, packetsLost: 2 }))}]]), __prev)`);
+
+  assert.equal(sample.mbps, 1.1);
+  assert.equal(sample.jitterMs, 3);
+  assert.equal(sample.lost, 2);
+  assert.equal(page.run(`ringLiveStatsText(${JSON.stringify(sample)})`),
+    "Live stream as received by this browser (Ring cloud to browser, not the doorbell's Wi-Fi): "
+    + '25 fps · 1280x720 · 1.1 Mbps · jitter 3 ms · lost 2');
+});
+
+test('missing values are N/D, never zero', () => {
+  const page = loadLiveView();
+  const sample = page.run(`ringLiveStatsSample(new Map([['a', { type: 'inbound-rtp', mediaType: 'video', timestamp: 5 }]]), null)`);
+  assert.match(page.run(`ringLiveStatsText(${JSON.stringify(sample)})`),
+    /: N\/D fps · resolution N\/D · N\/D Mbps · jitter N\/D ms · lost N\/D$/);
+  assert.equal(page.run("ringLiveStatsSample(new Map([['x', { type: 'candidate-pair' }]]), null)"), null);
+});
+
+test('the line updates every second and stays as "Last live session" after the end', async () => {
+  const stats = [
+    [rtp(0, { framesDecoded: 0, bytesReceived: 0 })],
+    [rtp(1000, { framesDecoded: 25, bytesReceived: 137_500 })],
+    [rtp(2000, { framesDecoded: 50, bytesReceived: 275_000, packetsLost: 1 })],
+  ];
+  const page = loadLiveView({ stats });
+  for (const [id, text] of [['m-rssi', 'N/D'], ['m-battery', 'N/D'], ['m-jitter', 'N/D'], ['m-loss', 'N/D'],
+    ['badge-wifi', '📶 Wi-Fi N/D'], ['heartbeat-status', 'idle'], ['ring-live-stats', 'Live stream as received by this server: 8.0 s']]) {
+    page.el(id).textContent = text;
+  }
+  await startAndConnect(page);
+  await page.advance(2000);
+
+  const line = page.el('ring-live-webrtc-stats');
+  assert.equal(line.style.display, '');
+  assert.match(line.textContent, /^Live stream as received by this browser \(Ring cloud to browser, not the doorbell's Wi-Fi\): 25 fps · 1280x720 · 1\.1 Mbps · jitter 3 ms · lost 1$/);
+
+  page.run("stopRingLiveView('stopped')");
+  await page.advance(3000);
+  assert.match(line.textContent, /^Last live session: Live stream as received by this browser .*lost 1$/);
+  // Informative only: the cards, the heartbeat and the server-side live stats line are untouched.
+  assert.equal(page.el('m-rssi').textContent, 'N/D');
+  assert.equal(page.el('m-battery').textContent, 'N/D');
+  assert.equal(page.el('m-jitter').textContent, 'N/D');
+  assert.equal(page.el('m-loss').textContent, 'N/D');
+  assert.equal(page.el('badge-wifi').textContent, '📶 Wi-Fi N/D');
+  assert.equal(page.el('heartbeat-status').textContent, 'idle');
+  assert.equal(page.el('ring-live-stats').textContent, 'Live stream as received by this server: 8.0 s');
+});
+
+test('stats that arrive after the end do not overwrite the "Last live session" line', async () => {
+  let resolveStats;
+  const page = loadLiveView({ stats: [[rtp(0, { framesPerSecond: 20 })]] });
+  await startAndConnect(page);
+  await flush();
+  page.pcs[0].getStats = () => new Promise(resolve => { resolveStats = resolve; });
+  await page.advance(1000);
+  page.run("stopRingLiveView('stopped')");
+  resolveStats(new Map([['a', rtp(5000, { framesPerSecond: 99 })]]));
+  await flush();
+
+  assert.match(page.el('ring-live-webrtc-stats').textContent, /^Last live session: .*: 20 fps/);
+});

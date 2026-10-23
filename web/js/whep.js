@@ -69,6 +69,66 @@ function restoreRingMonitor(session) {
   if (label) label.textContent = monitor.label;
 }
 
+// Informative only: these numbers never fill the Wi-Fi, battery, jitter or loss cards or the heartbeat.
+const RING_LIVE_STATS_LABEL =
+  "Live stream as received by this browser (Ring cloud to browser, not the doorbell's Wi-Fi)";
+
+/** Video inbound-rtp from one getStats() report; fps and bitrate use the previous sample when needed. */
+function ringLiveStatsSample(report, previous) {
+  let rtp = null;
+  report.forEach(s => {
+    if (s.type === 'inbound-rtp' && (s.kind || s.mediaType) === 'video') rtp = s;
+  });
+  if (!rtp) return null;
+  const num = v => (Number.isFinite(v) ? v : null);
+  const seconds = previous && rtp.timestamp > previous.timestamp ? (rtp.timestamp - previous.timestamp) / 1000 : null;
+  const delta = key => (seconds && num(rtp[key]) !== null && num(previous[key]) !== null
+    ? (rtp[key] - previous[key]) / seconds : null);
+  const perSecondBytes = delta('bytesReceived');
+  return {
+    timestamp: rtp.timestamp, framesDecoded: rtp.framesDecoded, bytesReceived: rtp.bytesReceived,
+    fps: num(rtp.framesPerSecond) ?? delta('framesDecoded'),
+    mbps: perSecondBytes === null ? null : (perSecondBytes * 8) / 1e6,
+    jitterMs: num(rtp.jitter) === null ? null : rtp.jitter * 1000,   // getStats reports seconds
+    lost: num(rtp.packetsLost),
+    width: num(rtp.frameWidth), height: num(rtp.frameHeight),
+  };
+}
+
+/** "Live stream as received by this browser (...): 25 fps · 1280x720 · 1.1 Mbps · jitter 3 ms · lost 0" */
+function ringLiveStatsText(sample) {
+  const nd = 'N/D';
+  return `${RING_LIVE_STATS_LABEL}: ${[
+    `${sample.fps === null ? nd : Math.round(sample.fps)} fps`,
+    sample.width && sample.height ? `${sample.width}x${sample.height}` : `resolution ${nd}`,
+    `${sample.mbps === null ? nd : sample.mbps.toFixed(1)} Mbps`,
+    `jitter ${sample.jitterMs === null ? nd : Math.round(sample.jitterMs)} ms`,
+    `lost ${sample.lost ?? nd}`,
+  ].join(' · ')}`;
+}
+
+function showRingLiveStatsLine(text) {
+  const line = ringLiveEl('ring-live-webrtc-stats');
+  if (!line) return;
+  line.textContent = text;
+  line.style.display = '';
+}
+
+async function pollRingLiveStats(session) {
+  let report;
+  try {
+    report = await session.pc.getStats();
+  } catch {
+    return;   // stats are best effort
+  }
+  if (ringLive !== session) return;
+  const sample = ringLiveStatsSample(report, session.lastStats);
+  if (!sample) return;
+  session.lastStats = sample;
+  session.lastLine = ringLiveStatsText(sample);
+  showRingLiveStatsLine(session.lastLine);
+}
+
 function ringLiveCountdown(session) {
   const left = Math.max(0, session.maxSeconds - session.elapsed);
   ringLiveStatus(`Ring live view: ends automatically within 30–60 s (about ${left} s left)`);
@@ -141,8 +201,10 @@ async function startRingLiveView() {
     session.startedAt = new Date();
     if (btn) btn.textContent = '🔴 Ring live view running';
     ringLiveCountdown(session);
+    pollRingLiveStats(session);
     session.timers.push(setInterval(() => {
       session.elapsed += 1;
+      pollRingLiveStats(session);
       ringLiveCountdown(session);
     }, 1000));
   } catch (err) {
@@ -170,6 +232,7 @@ function stopRingLiveView(reason, { keepalive = false, error = null } = {}) {
       .catch(() => {});
   }
   restoreRingMonitor(session);
+  if (session.lastLine) showRingLiveStatsLine(`Last live session: ${session.lastLine}`);   // kept until the next one
   const btn = ringLiveEl('btn-ring-live');
   if (btn) { btn.disabled = false; btn.textContent = RING_WHEP_BUTTON_LABEL; }
   const stopBtn = ringLiveEl('btn-ring-live-stop');
