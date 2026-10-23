@@ -320,16 +320,28 @@ def is_video_readable(config_attrs: Optional[Dict[str, Any]]) -> bool:
     return _sub(config_attrs, "e2e_encryption").get("enabled") is not True
 
 
+_ENHANCEMENT_SETTINGS = ("color_night_vision", "hdr", "ir_led_night_vision", "auto_zoom_track", "privacy_zones")
+
+
 def build_device_context(
     status_attrs: Optional[Dict[str, Any]],
     capability_attrs: Optional[Dict[str, Any]],
     config_attrs: Optional[Dict[str, Any]],
     location_attrs: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Device settings exactly as Ring reports them; anything missing or malformed is None."""
+    """
+    Device settings exactly as Ring reports them; anything missing or malformed is None. When the
+    capabilities list image enhancements, a setting the device does not support is None and is named
+    in `unsupported_settings`, whatever value the configurations carry.
+    """
     e2e = _sub(config_attrs, "e2e_encryption").get("enabled")
     motion = _sub(config_attrs, "motion_detection")
-    enhancements = _sub(config_attrs, "image_enhancements")
+    enhancements = dict(_sub(config_attrs, "image_enhancements"))
+    supported = _sub(capability_attrs, "image_enhancements").get("configurations")
+    supported = supported if isinstance(supported, list) else None
+    unsupported = [name for name in _ENHANCEMENT_SETTINGS if supported is not None and name not in supported]
+    for name in unsupported:
+        enhancements.pop(name, None)
     video = _sub(capability_attrs, "video")
     snooze = _sub(_sub(status_attrs, "audio"), "snooze")
     location = location_attrs or {}
@@ -339,6 +351,9 @@ def build_device_context(
         "e2e_encryption_enabled": e2e if isinstance(e2e, bool) else None,
         # None when the configurations were not fetched (fallback path): readability is unknown.
         "media_readable": is_video_readable(config_attrs) if config_attrs is not None else None,
+        # Snapshots are requested only when the capabilities list them.
+        "snapshot_supported": supported is not None and "snapshot" in supported,
+        "unsupported_settings": unsupported,
         "motion_detection": {
             "enabled": _on_off(motion.get("enabled")),
             "zones": _count(motion.get("motion_zones")),

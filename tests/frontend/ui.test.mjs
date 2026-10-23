@@ -1737,3 +1737,36 @@ for (const [label, mediaReadable, shown] of [['enabled', false, true], ['disable
     assert.equal(page.el('partner-e2e-warning').textContent, shown ? E2E_TEXT : '');
   });
 }
+
+// ---------------------------------------------------------------------------
+// T26: settings the device does not support read "n/a", not "off"
+// ---------------------------------------------------------------------------
+
+const LIVE_CONTEXT = {
+  ...RING_DEVICE_CONTEXT,
+  unsupported_settings: ['hdr', 'ir_led_night_vision', 'auto_zoom_track'],
+  image_enhancements: { color_night_vision: true, hdr: null, ir_led_night_vision: null, auto_zoom_track: null,
+    privacy_zones: 0 },
+};
+const LIVE_SETTINGS_LINE = 'Ring settings: night vision color on · IR LED n/a · HDR n/a · privacy zones 0 · motion on (1 zone)';
+
+test('T26: unsupported settings show n/a on the card and in Device settings (from Ring)', () => {
+  const page = loadPage();
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: LIVE_CONTEXT })})`);
+  assert.equal(page.el('partner-settings').textContent, LIVE_SETTINGS_LINE);
+
+  const diag = { diagnostic_status: 'INSUFFICIENT_DATA', root_cause_domain: 'NONE', confidence_score: 0 };
+  page.run(`renderResult(${JSON.stringify(diag)}, ${JSON.stringify({
+    telemetry: { _source: 'ring_partner_api', device_context: LIVE_CONTEXT } })})`);
+  assert.equal(page.el('tech-device-settings').textContent, LIVE_SETTINGS_LINE);
+});
+
+test('T26: a supported setting reported off still reads off', () => {
+  const page = loadPage();
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  const context = { ...LIVE_CONTEXT, unsupported_settings: [],
+    image_enhancements: { ...LIVE_CONTEXT.image_enhancements, hdr: false } };
+  page.run(`updateMetricCards(${JSON.stringify({ ...NULL_PARTNER_TELEMETRY, device_context: context })})`);
+  assert.ok(page.el('partner-settings').textContent.includes('HDR off'));
+});

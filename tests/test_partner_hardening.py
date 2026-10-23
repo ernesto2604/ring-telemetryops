@@ -258,9 +258,12 @@ def test_include_call_fills_device_context_in_one_request(monkeypatch):
     assert found["device_context"] == {
         "e2e_encryption_enabled": False,
         "media_readable": True,
+        # Capabilities list only hdr and privacy_zones: the other settings are not supported (T26).
+        "snapshot_supported": False,
+        "unsupported_settings": ["color_night_vision", "ir_led_night_vision", "auto_zoom_track"],
         "motion_detection": {"enabled": True, "zones": 1},
-        "image_enhancements": {"color_night_vision": False, "hdr": False, "ir_led_night_vision": False,
-                               "auto_zoom_track": True, "privacy_zones": 0},
+        "image_enhancements": {"color_night_vision": None, "hdr": False, "ir_led_night_vision": None,
+                               "auto_zoom_track": None, "privacy_zones": 0},
         "video": {"max_resolution": 1080, "supported_resolutions": [1080, 720]},
         "location": {"country": "US", "state": "WA"},
         "snooze": {"active": True, "until": "2026-10-20T11:00:00Z"},

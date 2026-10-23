@@ -455,9 +455,13 @@ function deviceSettingsText(ctx) {
   const motion = ctx.motion_detection || {};
   const zones = motion.zones;
   const zonesText = zones == null ? '' : ` (${zones} zone${zones === 1 ? '' : 's'})`;
-  return `Ring settings: night vision color ${onOffText(enh.color_night_vision)}`
-    + ` · IR LED ${onOffText(enh.ir_led_night_vision)} · HDR ${onOffText(enh.hdr)}`
-    + ` · privacy zones ${enh.privacy_zones ?? METRIC_NOT_AVAILABLE}`
+  // A setting the device does not support (per its capabilities) is "n/a", not "off".
+  const unsupported = Array.isArray(ctx.unsupported_settings) ? ctx.unsupported_settings : [];
+  const setting = (name, text) => (unsupported.includes(name) ? 'n/a' : text);
+  return `Ring settings: night vision color ${setting('color_night_vision', onOffText(enh.color_night_vision))}`
+    + ` · IR LED ${setting('ir_led_night_vision', onOffText(enh.ir_led_night_vision))}`
+    + ` · HDR ${setting('hdr', onOffText(enh.hdr))}`
+    + ` · privacy zones ${setting('privacy_zones', enh.privacy_zones ?? METRIC_NOT_AVAILABLE)}`
     + ` · motion ${onOffText(motion.enabled)}${zonesText}`;
 }
 

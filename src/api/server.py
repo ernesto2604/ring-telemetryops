@@ -187,6 +187,15 @@ def _partner_http_error(exc: RingPartnerError) -> HTTPException:
     return HTTPException(status_code=status, detail=detail, headers=headers)
 
 
+def _snapshot_available(devices: list) -> bool:
+    """A discovered device lists snapshot support and its video is not end-to-end encrypted."""
+    return any(
+        (d.get("device_context") or {}).get("snapshot_supported") is True
+        and (d.get("device_context") or {}).get("media_readable") is not False
+        for d in devices
+    )
+
+
 def _require_partner() -> RingPartnerClient:
     if ring_source != "partner":
         raise HTTPException(
@@ -533,7 +542,8 @@ async def get_ring_status():
             "error_reason": None,
             "device_count": len(devices),
             "devices": devices,
-            "features": {"telemetry": True, "snapshot": False, "whep": False, "webhooks": False},
+            "features": {"telemetry": True, "snapshot": _snapshot_available(devices), "whep": False,
+                         "webhooks": False},
             "monitoring": _partner_monitoring(),
         }
 
