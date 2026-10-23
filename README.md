@@ -492,6 +492,32 @@ the labelled `local_fallback`; with them, anomalies are sent to Bedrock (billed)
 * **Pre-check** (`_provider: "precheck"`): nominal, offline and insufficient-data verdicts are decided
   without calling Bedrock.
 
+### Ring media constraints: required headers, watermark, encrypted video
+
+Partner mode only; the simulator is unchanged.
+
+* **Required headers:** every Ring request sends `User-Agent: RingTelemetryOps/<version>` and a
+  `Hardware_Id` UUID (`RING_PARTNER_HARDWARE_ID`, or a stable UUID5 derived from the computer name and
+  `RING_PARTNER_DEVICE_ID`). An HTTP 406 is shown as "Ring blocked the request: missing headers or a
+  datacenter IP"; it never switches the data source or substitutes simulated data. `X-RateLimit-Remaining`
+  is read and `Retry-After` is honoured on 429.
+* **Error reasons:** `/api/ring/status` returns `error_reason` (`missing_token`, `token_rejected`,
+  `blocked_406`, `rate_limited`, `device_offline_503`, `network_error`, `api_error`); the device card
+  shows a one-line explanation under the "Ring credentials error" header. The token is never shown.
+* **Device settings:** one `GET /v1/devices/{id}?include=status,capabilities,configurations,location`
+  per device fills `device_context` (end-to-end encryption, motion detection and zones, night vision,
+  HDR, privacy zones, video resolutions, coarse location, audio snooze). Values Ring does not report stay
+  `null`. If that call fails or has no `included` data, the individual status and capabilities calls run
+  as before. The settings appear on the device card, in the report's Technical details and, without IDs,
+  in the Bedrock prompt as context; they do not change severity.
+* **Encrypted video:** when Ring reports `e2e_encryption.enabled: true`, `device_context.media_readable`
+  is `false`; the card and the report's visual findings say image analysis is not possible and the
+  diagnosis uses device status only. It is not an error and is not retried.
+* **Watermark:** Ring media carries a mandatory watermark in its top corners, which would inflate the
+  sharpness score. The video analyzer can drop the top `RING_WATERMARK_TOP_FRACTION` (10 %, a project
+  heuristic) before measuring (`crop_watermark`, off by default). No Ring media is fetched yet, so the
+  option is not used by any current path.
+
 ### Known limitations
 
 * **Voltage rule vs the KB:** the KB (unverified, pending re-verification) lists 8-24 V AC for
