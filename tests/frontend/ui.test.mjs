@@ -318,7 +318,8 @@ test('Each Partner pulse makes exactly one status refresh and never diagnoses', 
 
   for (let i = 0; i < 3; i++) await page.run('onHeartbeatPulse()');
 
-  assert.deepEqual(page.requests.map(r => r.url), Array(3).fill('/api/ring/telemetry'));
+  // One status refresh and one Ring events query per pulse (T28); never a diagnosis request.
+  assert.deepEqual(page.requests.map(r => r.url), Array(3).fill(['/api/ring/telemetry', '/api/ring/events']).flat());
 });
 
 test('online false shows Offline and confirms the alert only after N consecutive reads', async () => {
@@ -1802,4 +1803,57 @@ test('T27: without a snapshot the monitor stays as it was', async () => {
   page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE'; applyPartnerModeUI();");
   await page.run('runManualDiagnosis()');
   assert.notEqual(page.el('partner-snapshot').style.display, '');
+});
+
+// ---------------------------------------------------------------------------
+// T28: Ring events list and event-triggered reports
+// ---------------------------------------------------------------------------
+
+const BLURRY_EVENT_REPORT = trigger => ({
+  event: { id: 'ev-9', event_type: trigger === 'live' ? 'on_demand' : trigger, start: 1761210000000 },
+  trigger,
+  _provider: 'local_fallback',
+  diagnostic_result: { diagnostic_status: 'DEGRADED', root_cause_domain: 'OPTICAL_PHYSICAL', confidence_score: 0.86,
+    telemetry_findings: [], visual_findings: ['Blur'], recommended_mitigation: 'Clean the lens.' },
+});
+
+test('T28: Ring events list shows type, subtype and time; empty list says No events yet', async () => {
+  let reply = { status: 200, body: { events: [
+    { id: 'a', event_type: 'motion', sub_type: 'human', start: 1761210000000 },
+    { id: 'b', event_type: 'ding', sub_type: null, start: 1761210060000 },
+  ], reports: [] } };
+  const page = loadPage({ '/api/ring/events': () => reply });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+
+  await page.run('pollPartnerEvents()');
+  const items = page.el('partner-events').children[1].children.map(li => li.textContent);
+  assert.equal(page.el('partner-events').children[0].textContent, 'Ring events');
+  assert.deepEqual(items, ['Motion · human · 09:00:00 UTC', 'Doorbell press · 09:01:00 UTC']);
+  assert.equal(page.el('diag-status-text').textContent, '');   // no report: silence (D11)
+  assert.equal(page.toasts.length, 0);
+
+  reply = { status: 200, body: { events: [], reports: [] } };
+  await page.run('pollPartnerEvents()');
+  // The fake DOM keeps old children after innerHTML = '': the latest list is the last child.
+  assert.deepEqual(page.el('partner-events').children.at(-1).children.map(li => li.textContent), ['No events yet']);
+});
+
+for (const [trigger, name] of [['ding', 'Doorbell Press'], ['motion', 'Motion Detection'], ['live', 'Live View']]) {
+  test(`T28: a new ${trigger} event with a problem is reported as "Issue during ${name}"`, async () => {
+    const page = loadPage({ '/api/ring/events': { status: 200, body: { events: [], reports: [BLURRY_EVENT_REPORT(trigger)] } } });
+    page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+
+    await page.run('pollPartnerEvents()');
+
+    assert.equal(page.el('app-push-title').textContent, `Ring Alert: Issue during ${name}`);
+    assert.equal(page.el('diag-status-text').textContent, 'DEGRADED');
+  });
+}
+
+test('T28: events Retry-After pauses the next event queries', async () => {
+  const page = loadPage({ '/api/ring/events': { status: 429, headers: { 'Retry-After': '30' }, body: {} } });
+  page.run("state.ringSource = 'partner'; state.ringMode = 'LIVE';");
+  await page.run('pollPartnerEvents()');
+  await page.run('pollPartnerEvents()');
+  assert.equal(page.requests.filter(r => r.url === '/api/ring/events').length, 1);
 });

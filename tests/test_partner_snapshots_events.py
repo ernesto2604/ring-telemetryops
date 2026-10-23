@@ -296,3 +296,148 @@ def test_simulator_analysis_never_requests_a_snapshot(ring):
     response = api.post("/api/analyze", json={"source_mode": "twin", "camera_active": True, "frame_base64": frame,
                                               "telemetry": {"scenario": "nominal"}})
     assert response.status_code == 200 and ring.requests == []
+
+
+# ---------------------------------------------------------------------------
+# T28: Event History (polling instead of webhooks)
+# ---------------------------------------------------------------------------
+
+from src.utils.ring_partner_client import RingRateLimitError, RingUnauthorizedError  # noqa: E402
+from tests.fake_ring_server import history_event  # noqa: E402
+
+EVENTS_PATH = f"/v1/history/devices/{DEVICE_ID}/events"
+
+
+def test_events_follow_at_most_two_pages_and_split_subtypes(ring):
+    ring.event_pages = {
+        "": [history_event("e3", "motion.human", 3000), history_event("e2", "ding", 2000, reviewed=True)],
+        "p2": [history_event("e1", "on_demand", 1000)],
+        "p3": [history_event("e0", "motion", 500)],
+    }
+    ring.event_links = {"": "p2", "p2": "p3"}
+
+    events = asyncio.run(RingPartnerClient().list_events(DEVICE_ID))
+
+    assert [e["id"] for e in events] == ["e3", "e2", "e1"]          # page 3 not fetched
+    assert events[0] == {"id": "e3", "event_type": "motion", "sub_type": "human", "start": 3000, "end": 23000,
+                         "is_third_party_reviewed": False}
+    assert events[1]["sub_type"] is None and events[1]["is_third_party_reviewed"] is True
+    first, second = [r for r in ring.requests if r["path"] == EVENTS_PATH]
+    assert first["query"]["event_types"] == "ding,motion,on_demand"
+    assert second["query"] == {"page[key]": "p2"}
+    assert all(r["headers"]["Hardware_Id"] for r in ring.requests)
+
+
+def test_empty_history_is_normal(ring):
+    assert asyncio.run(RingPartnerClient().list_events(DEVICE_ID)) == []
+
+
+@pytest.mark.parametrize("status, error", [(401, RingUnauthorizedError), (429, RingRateLimitError)])
+def test_event_history_errors_are_typed(ring, status, error):
+    ring.events_error = (status, {"Retry-After": "30"})
+
+    async def call():
+        with pytest.raises(error):
+            await RingPartnerClient().list_events(DEVICE_ID)
+
+    asyncio.run(call())
+
+
+@pytest.fixture
+def events_partner(partner, monkeypatch):
+    monkeypatch.setattr(server, "_partner_events", [])
+    monkeypatch.setattr(server, "_seen_event_ids", set())
+    monkeypatch.setattr(server, "_events_poll", {"last_query": None, "paused_until": 0.0})
+    monkeypatch.setattr(server, "_SERVER_STARTED_MS", 1_761_000_000_000)
+    return partner
+
+
+def new_start(offset_ms=60_000):
+    return server._SERVER_STARTED_MS + offset_ms
+
+
+def poll():
+    server._events_poll["last_query"] = None   # next poll cycle
+    return api.get("/api/ring/events")
+
+
+def test_new_event_with_healthy_frame_is_silent(events_partner):
+    ring, llm_calls = events_partner
+    ring.event_pages = {"": [history_event("ev-1", "motion.human", new_start())]}
+
+    body = poll().json()
+
+    assert body["reports"] == [] and llm_calls == []
+    assert body["events"][0]["id"] == "ev-1" and body["events"][0]["sub_type"] == "human"
+    post = next(r for r in ring.requests if r["path"] == SNAPSHOT_POST)
+    assert post["json"]["type"] == "at_timestamp" and post["json"]["timestamp"] == new_start()
+
+
+@pytest.mark.parametrize("event_type, trigger", [("ding", "ding"), ("motion.vehicle", "motion"),
+                                                 ("on_demand", "live")])
+def test_new_event_with_blurry_frame_returns_a_report(events_partner, event_type, trigger):
+    ring, llm_calls = events_partner
+    ring.image = jpeg(blurry_frame())
+    ring.event_pages = {"": [history_event("ev-2", event_type, new_start())]}
+
+    body = poll().json()
+
+    (report,) = body["reports"]
+    assert report["trigger"] == trigger and report["event"]["id"] == "ev-2"
+    assert report["diagnostic_result"]["diagnostic_status"] in ("DEGRADED", "CRITICAL")
+    assert llm_calls and llm_calls[0]["image"]
+
+
+def test_events_before_server_start_are_listed_but_not_analyzed(events_partner):
+    ring, _ = events_partner
+    ring.event_pages = {"": [history_event("old-1", "ding", server._SERVER_STARTED_MS - 1)]}
+
+    body = poll().json()
+
+    assert [e["id"] for e in body["events"]] == ["old-1"] and body["reports"] == []
+    assert SNAPSHOT_POST not in ring.paths()
+
+
+def test_repeated_event_is_analyzed_once(events_partner):
+    ring, _ = events_partner
+    ring.image = jpeg(blurry_frame())
+    ring.event_pages = {"": [history_event("ev-3", "ding", new_start())]}
+
+    assert len(poll().json()["reports"]) == 1
+    second = poll().json()
+
+    assert second["reports"] == [] and [e["id"] for e in second["events"]] == ["ev-3"]
+    assert ring.paths("POST").count(SNAPSHOT_POST) == 1
+
+
+def test_one_ring_query_per_poll_interval(events_partner):
+    ring, _ = events_partner
+    poll()
+    api.get("/api/ring/events")   # same poll cycle: served from memory
+    assert ring.paths().count(EVENTS_PATH) == 1
+
+
+def test_429_pauses_event_queries_for_retry_after(events_partner):
+    ring, _ = events_partner
+    ring.events_error = (429, {"Retry-After": "30"})
+
+    first = poll()
+    second = poll()
+
+    assert first.status_code == 429 and first.headers["Retry-After"] == "30"
+    assert second.status_code == 429 and second.json()["detail"]["reason"] == "rate_limited"
+    assert ring.paths().count(EVENTS_PATH) == 1   # no Ring query while paused
+
+
+def test_401_on_events_keeps_the_token_rejected_reason(events_partner):
+    ring, _ = events_partner
+    ring.events_error = (401, None)
+
+    response = poll()
+
+    assert response.status_code == 502 and response.json()["detail"]["reason"] == "token_rejected"
+    assert TOKEN not in response.text
+
+
+def test_events_require_partner_mode():
+    assert api.get("/api/ring/events").status_code == 409

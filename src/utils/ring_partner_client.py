@@ -13,6 +13,7 @@ Endpoints used, as described in developer.amazon.com/docs/ring/api-documentation
   GET /v1/devices/{device_id}/capabilities   Device Capabilities
   POST /v1/devices/{device_id}/media/image/download, then GET of the pre-signed Location
                                              Image snapshot (the token is never sent to that URL)
+  GET /v1/history/devices/{device_id}/events  Event History (paginated by links.next)
 
 REQUIRED HEADERS:
   - Every request sends `User-Agent: RingTelemetryOps/<version>` and `Hardware_Id: <UUID>`.
@@ -412,6 +413,29 @@ def first_component_id(capability_attrs: Optional[Dict[str, Any]]) -> Optional[s
     return value if isinstance(value, str) and value else None
 
 
+DEFAULT_EVENT_TYPES = "ding,motion,on_demand"
+EVENT_TYPES_ENV_VAR = "RING_PARTNER_EVENT_TYPES"
+
+
+def normalize_event(item: Dict[str, Any]) -> Dict[str, Any]:
+    """One `history-events` item; `motion.human` style types are split into event_type and sub_type."""
+    attrs = _attributes(item)
+    raw_type = attrs.get("event_type")
+    event_type, _, sub_type = raw_type.partition(".") if isinstance(raw_type, str) else (None, "", "")
+    if not sub_type and isinstance(attrs.get("sub_type"), str):
+        sub_type = attrs["sub_type"]
+    epoch = lambda v: v if isinstance(v, int) and not isinstance(v, bool) else None  # noqa: E731
+    reviewed = attrs.get("is_third_party_reviewed")
+    return {
+        "id": item.get("id") if isinstance(item.get("id"), str) else None,
+        "event_type": event_type or None,
+        "sub_type": sub_type or None,
+        "start": epoch(attrs.get("start")),
+        "end": epoch(attrs.get("end")),
+        "is_third_party_reviewed": reviewed if isinstance(reviewed, bool) else None,
+    }
+
+
 def _fetch_error(exc: Exception) -> Dict[str, Any]:
     """Serializable record of a failed per-device request (messages are already token-redacted)."""
     return {
@@ -674,6 +698,27 @@ class RingPartnerClient:
         return {**_snapshot_result("ok"), "image": bytes(data), "content_type": content_type,
                 "media_timestamp": int(media_timestamp) if media_timestamp.isdigit() else None,
                 "media_origin": media_origin if isinstance(media_origin, str) else None}
+
+    async def list_events(self, device_id: str, event_types: str = DEFAULT_EVENT_TYPES,
+                          max_pages: int = 2) -> List[Dict[str, Any]]:
+        """
+        Event History (polling alternative to webhooks), newest first, following `links.next` for at
+        most `max_pages` pages. Ring returns only events after the user's consent, so [] is normal.
+        """
+        path = f"/v1/history/devices/{quote(device_id, safe='')}/events"
+        self._device_path(device_id)  # same validation as the device routes
+        events: List[Dict[str, Any]] = []
+        params: Optional[Dict[str, str]] = {"event_types": event_types}
+        for _ in range(max(1, max_pages)):
+            document = await self._get_json(path, params)
+            if not isinstance(document.get("data"), list):
+                raise RingPartnerError(f"Ring API GET {path} returned no 'data' array")
+            events += [normalize_event(item) for item in document["data"] if isinstance(item, dict)]
+            next_link = (document.get("links") or {}).get("next") if isinstance(document.get("links"), dict) else None
+            if not isinstance(next_link, str) or not next_link.startswith("/"):
+                break  # no next page (or not the documented relative URL)
+            path, params = next_link, None
+        return events
 
     # -- internals ----------------------------------------------------------
 

@@ -14,6 +14,7 @@ Endpoints:
   GET  /api/ring/devices        → Ring Partner API devices (RING_DATA_SOURCE=partner)
   GET  /api/ring/telemetry      → Ring Partner API device status as telemetry (no video / WebRTC data)
   GET  /api/ring/snapshot       → Last Ring snapshot from memory (Partner mode, Cache-Control: no-store)
+  GET  /api/ring/events         → Recent Ring Event History events and reports of new events with a problem
   POST /api/ring/whep-session   → Simulated WHEP answer for the Digital Twin (501 in Partner mode)
   POST /api/telemetry           → Generates telemetry payload (custom sliders or presets)
   POST /api/analyze             → Full diagnostic pipeline: video/canvas + telemetry + LLM
@@ -24,6 +25,7 @@ Endpoints:
 import base64
 import logging
 import sys
+import time
 import os
 from uuid import uuid4
 from pathlib import Path
@@ -60,6 +62,8 @@ from src.utils.ring_partner_client import (
     RingServiceUnavailableError,
     RingTimeoutError,
     RingUnauthorizedError,
+    DEFAULT_EVENT_TYPES,
+    EVENT_TYPES_ENV_VAR,
     first_component_id,
 )
 from src.utils.partner_telemetry import partner_device_to_telemetry
@@ -669,6 +673,90 @@ async def get_ring_snapshot():
     if _latest_snapshot["media_origin"]:
         headers["X-Media-Origin"] = _latest_snapshot["media_origin"]
     return Response(content=_latest_snapshot["image"], media_type=_latest_snapshot["content_type"], headers=headers)
+
+
+# Event History polling (webhooks are not implemented). In memory: the last 20 events, the IDs
+# already seen, and the query pacing. Events that started before this server did are listed but
+# never analyzed, so a restart does not replay the history.
+MAX_RECENT_EVENTS = 20
+_SERVER_STARTED_MS = int(time.time() * 1000)
+_partner_events: list = []
+_seen_event_ids: set = set()
+_events_poll = {"last_query": None, "paused_until": 0.0}
+# Event type -> UI trigger key (the Digital Twin's Ding / PIR / Live View names).
+EVENT_TRIGGERS = {"ding": "ding", "motion": "motion", "on_demand": "live"}
+
+
+def _run_partner_concierge(telemetry: Dict[str, Any], frame_base64: Optional[str],
+                           no_frame_reason: Optional[str], snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    result = SupportConcierge().process_stream(
+        video_path=None, telemetry=telemetry, frame_base64=frame_base64, camera_active=True,
+        no_frame_reason=no_frame_reason, ring_media=snapshot is not None,
+    )
+    if snapshot is not None:
+        result["snapshot"] = snapshot
+    return result
+
+
+async def _analyze_partner_event(device_id: str, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Analysis of one new event with the snapshot at its start; None when it fails (logged, no frame data)."""
+    try:
+        telemetry = await _partner_telemetry(device_id)
+        frame, reason, snapshot = await _partner_snapshot(telemetry, at_timestamp_ms=event["start"])
+        return _run_partner_concierge(telemetry, frame, reason, snapshot)
+    except Exception as exc:  # one failed event never stops the poll
+        logger.warning("Ring event analysis failed (%s)", type(exc).__name__)
+        return None
+
+
+@app.get("/api/ring/events")
+async def get_ring_events():
+    """
+    Recent Ring events (Event History polling, at most one Ring query per poll interval) and the
+    reports of new events with a problem. A new event (unseen ID, started after this server) is
+    analyzed at once with the snapshot at its start; a healthy result is not returned (silence).
+    """
+    client = _require_partner()
+    now = time.monotonic()
+    if now < _events_poll["paused_until"]:
+        wait = math.ceil(_events_poll["paused_until"] - now)
+        raise HTTPException(status_code=429, headers={"Retry-After": str(wait)},
+                            detail={"source": "ring_partner_api", "reason": "rate_limited",
+                                    "retry_after_seconds": wait, "message": "Ring asked to wait (Retry-After)."})
+    poll_seconds = _partner_monitoring()["poll_interval_seconds"]
+    reports = []
+    last = _events_poll["last_query"]
+    if last is None or now - last >= poll_seconds:
+        _events_poll["last_query"] = now
+        target = os.getenv("RING_PARTNER_DEVICE_ID", "").strip() or next(iter(_partner_known_devices), None)
+        if target is None:
+            devices = await _partner_devices()
+            target = devices[0]["device_id"] if devices else None
+        if target is None:
+            return {"source": "ring_partner_api", "events": [], "reports": []}
+        event_types = os.getenv(EVENT_TYPES_ENV_VAR, "").strip() or DEFAULT_EVENT_TYPES
+        try:
+            events = await client.list_events(target, event_types)
+        except RingRateLimitError as exc:
+            _events_poll["paused_until"] = now + (exc.retry_after if exc.retry_after is not None else poll_seconds)
+            raise _partner_http_error(exc) from None
+        except RingPartnerError as exc:
+            raise _partner_http_error(exc) from None
+        new_events = []
+        for event in reversed(events):  # oldest first
+            if not event["id"] or event["id"] in _seen_event_ids:
+                continue
+            _seen_event_ids.add(event["id"])
+            _partner_events.insert(0, event)
+            if event["start"] is not None and event["start"] > _SERVER_STARTED_MS:
+                new_events.append(event)
+        del _partner_events[MAX_RECENT_EVENTS:]
+        for event in new_events:
+            result = await _analyze_partner_event(target, event)
+            status = ((result or {}).get("diagnostic_result") or {}).get("diagnostic_status")
+            if status in ("DEGRADED", "CRITICAL"):
+                reports.append({"event": event, "trigger": EVENT_TRIGGERS.get(event["event_type"]), **result})
+    return {"source": "ring_partner_api", "events": list(_partner_events), "reports": reports}
 
 
 @app.post("/api/analyze")

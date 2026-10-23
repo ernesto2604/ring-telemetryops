@@ -20,6 +20,7 @@ const state = {
   partnerApiError:     null,  // last failed status read {status, message, reason}; separate from device state
   ringErrorReason:     null,  // /api/ring/status error_reason (missing_token, token_rejected, ...)
   pollPausedUntil:     0,     // epoch ms; set from Retry-After or the 429 backoff
+  eventsPausedUntil:   0,     // epoch ms; Retry-After of /api/ring/events
   rateLimitStreak:     0,     // consecutive 429s without Retry-After (backoff exponent)
   offlineAlertMaxGapSeconds: 60,
   lastEvidenceAt:      0,     // epoch ms of the last read with online true/false
@@ -373,7 +374,63 @@ async function pollPartnerStatus() {
   const online = state.telemetry && state.telemetry.device_health
     ? state.telemetry.device_health.online : undefined;
   applyOfflineAlertPolicy(online, Date.now());
+  await pollPartnerEvents();
   updateHeartbeatUI();
+}
+
+const RING_EVENT_LABELS = { ding: 'Doorbell press', motion: 'Motion', on_demand: 'Live view' };
+
+/**
+ * Ring Event History, once per pulse (the server queries Ring at most once per poll interval).
+ * New events are analyzed by the server; only reports with a problem come back (D11: silence
+ * otherwise) and they are shown like a Digital Twin trigger (Ding / PIR / Live View).
+ */
+async function pollPartnerEvents() {
+  // Ring's rate limit is per partner: a Retry-After on status reads pauses event queries too.
+  if (Date.now() < state.eventsPausedUntil || Date.now() < state.pollPausedUntil) return;
+  let data;
+  try {
+    const r = await fetch('/api/ring/events');
+    if (!r.ok) {
+      const wait = Number(r.headers && r.headers.get('Retry-After'));
+      if (wait > 0) state.eventsPausedUntil = Date.now() + wait * 1000;
+      return;
+    }
+    data = await r.json();
+  } catch {
+    return;   // events are best effort; status polling reports API failures
+  }
+  renderRingEvents(data.events || []);
+  for (const report of data.reports || []) {
+    const diag = report.diagnostic_result;
+    if (!diag) continue;
+    if (report.snapshot) showPartnerSnapshot(report.snapshot);
+    renderResult(diag, report);
+    showReportProvider(report._provider);
+    showAppPushNotification(diag, 'event_session', report.trigger);
+    setResolvedNote(false);
+  }
+}
+
+function renderRingEvents(events) {
+  const el = document.getElementById('partner-events');
+  if (!el) return;
+  el.style.display = '';
+  el.innerHTML = '';
+  const title = document.createElement('div');
+  title.textContent = 'Ring events';
+  el.appendChild(title);
+  const list = document.createElement('ul');
+  const lines = events.length ? events.map(e => {
+    const when = Number.isFinite(e.start) ? new Date(e.start).toISOString().replace('T', ' ').slice(11, 19) + ' UTC' : 'time N/D';
+    return `${RING_EVENT_LABELS[e.event_type] || e.event_type || 'Event'}${e.sub_type ? ` · ${e.sub_type}` : ''} · ${when}`;
+  }) : ['No events yet'];
+  lines.forEach(text => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    list.appendChild(li);
+  });
+  el.appendChild(list);
 }
 
 async function onHeartbeatPulse() {
