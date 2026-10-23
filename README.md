@@ -74,7 +74,7 @@ Developed for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Ring 
    * **Pre-check:** Nominal telemetry and OpenCV results are returned without calling Bedrock; Bedrock is reserved for cases with detected anomalies.
 6. **Two explicit data sources (`RING_DATA_SOURCE`):**
    * `simulator` (default): the Digital Twin. All telemetry, video and WHEP answers are **simulated** and labelled as such (`_source="mock"`, `"simulated": true`).
-   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). Ring's API documentation also lists the Event History (`GET /v1/history/devices/{device_id}/events`), Device Configuration (`GET /v1/devices/{device_id}/configurations`) and WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) endpoints; this project does not implement them. The KB marks those three paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses are telemetry-only: Ring image retrieval, live video (WHEP), motion events and webhooks are **not implemented**, and frames or telemetry sent by the client are never presented as Ring data.
+   * `partner`: the official **Ring Partner API**, read-only: `GET /v1/devices`, `GET /v1/devices/{id}/status` and `GET /v1/devices/{id}/capabilities`, as listed in the [Ring Partner API documentation](https://developer.amazon.com/docs/ring/api-documentation.html) (endpoint paths checked against the documentation on 2026-10-21; the response fields the client reads were not re-verified). It also reads device settings through `GET /v1/devices/{id}?include=...`, image snapshots (`POST /v1/devices/{device_id}/media/image/download`) and the Event History (`GET /v1/history/devices/{device_id}/events`); see "Ring media constraints" below. WHEP live video (`POST /v1/devices/{device_id}/media/streaming/whep/sessions`) is not implemented. The KB marks the Event History, Device Configuration and WHEP paths as matching the documentation (checked 2026-10-21) while the fields it attaches to them, and the device attributes it names, stay `unverified`. It reports `online`, battery percentage (only when capabilities declare battery support) and the last check-in time (`reported_at`). It does **not** provide RSSI, transformer voltage or WebRTC statistics, so those stay unknown. Diagnoses use that telemetry plus a Ring snapshot when the device supports one; live video (WHEP / RTSPS), video clips and webhooks are **not implemented**, and frames or telemetry sent by the client are never presented as Ring data.
    * Any other value is an explicit error, never a silent fallback to the simulator. The former unofficial `ring_doorbell` adapter was removed.
 
 ---
@@ -513,10 +513,48 @@ Partner mode only; the simulator is unchanged.
 * **Encrypted video:** when Ring reports `e2e_encryption.enabled: true`, `device_context.media_readable`
   is `false`; the card and the report's visual findings say image analysis is not possible and the
   diagnosis uses device status only. It is not an error and is not retried.
+* **Supported settings only:** when the capabilities list the image enhancements, a setting missing from
+  that list is `null` (shown as "n/a"), not "off". `device_context.snapshot_supported` is true only when
+  the list includes `snapshot`; `features.snapshot` in `/api/ring/status` also requires readable video.
+* **Snapshot (two steps, server to server):** "Analyze now" requests the latest image of the last 24 h
+  (`POST .../media/image/download`, JPEG, no resolution so the watermark covers the least, the first
+  component on multi-camera devices). Ring answers `303` with a pre-signed URL, which the server fetches
+  **without** the access token and reads `X-Media-Timestamp` / `X-Media-Origin`. Only a decodable JPEG or
+  PNG of at most 10 MB is used. "Not ready" (425) is retried for up to about 15 s, 500/503 once; "no recent
+  recording" (416) and "corrupt recording" (422) are normal outcomes explained in the visual findings. No
+  snapshot is requested for encrypted video or a device without snapshot support.
 * **Watermark:** Ring media carries a mandatory watermark in its top corners, which would inflate the
-  sharpness score. The video analyzer can drop the top `RING_WATERMARK_TOP_FRACTION` (10 %, a project
-  heuristic) before measuring (`crop_watermark`, off by default). No Ring media is fetched yet, so the
-  option is not used by any current path.
+  sharpness score. Ring snapshots are measured without the top `RING_WATERMARK_TOP_FRACTION` (10 %, a
+  project heuristic); the simulator and the sample videos are measured as before.
+* **In memory only:** Ring frames are never written to disk or logged. The last one is kept in memory and
+  served by `GET /api/ring/snapshot` (`Cache-Control: no-store`) for the Partner monitor, which shows it
+  with Ring's time and origin.
+* **What reaches Bedrock:** a Ring image is sent only when the pre-check finds an image problem (blur,
+  tint, banding, brightness). A healthy frame is reported as "image OK" and never leaves the server, even
+  when another metric (for example a low battery) calls Bedrock.
+* **Event History (polling, not webhooks):** each Partner poll cycle reads
+  `GET /v1/history/devices/{id}/events` at most once (types from `RING_PARTNER_EVENT_TYPES`, default
+  `ding,motion,on_demand`; up to 2 pages; `Retry-After` honoured) and lists the last 20 events under
+  "Ring events". An empty list is normal: Ring returns only events after the user's consent. A new event
+  (unseen ID, started after the server) is analyzed at once with the snapshot at its start; it stays silent
+  unless there is a problem, then the report is titled "Issue during Doorbell Press / Motion Detection /
+  Live View". Events from before the server started are listed, not analyzed.
+* **Per-domain verdict:** Partner reports carry `checked_domains` (image `ok` / `issue` / `not_available`;
+  network and power `not_available`, because Ring does not share Wi-Fi or power data with partner apps).
+  `diagnostic_status` is unchanged; the customer view says "Partial check" or "Not enough data" and the
+  mitigation is written for the customer.
+* **Not implemented yet:** live video (WHEP / RTSPS), video clips and webhooks.
+
+#### Alignment with Ring's Computer Vision Guidelines
+
+* **Funnel:** the cheap local pre-check (telemetry levels and OpenCV image checks) runs first; Bedrock is
+  called only when it finds an anomaly.
+* **Frame selection:** frames are judged by sharpness (variance of the Laplacian) and brightness, with the
+  watermark band excluded, before any model sees them.
+* **Guardrails:** Bedrock answers are validated against the diagnostic contract (allowed values, findings
+  and customer-text rules, one corrective retry) with a deterministic fallback when they still fail.
+* **Privacy:** Ring images are processed in memory, never stored or logged, and sent to Bedrock only for
+  an image anomaly; unreadable (encrypted) media is an expected outcome, not retried.
 
 ### Known limitations
 
